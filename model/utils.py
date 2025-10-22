@@ -889,7 +889,7 @@ def standardize_adata_obs(adata: ad.AnnData, gene_dict: ad.AnnData, mean_matrix:
 def tokenization_h5ad(adata_path, gene_dict_path, mean_path, specie=None, assay=None, output_path=None, anno=False,
                       split="train", label=False, cell_density=True, gene_niche=True,
                       use_hvg=False, n_hvg=1000, min_genes=3, min_cells=3, spatial_imputation=False,
-                      use_dev_abs=False, use_slice=False):
+                      use_dev_abs=False):
     """
     Brainbeacon input tokenization
     Conver H5ad to Joblib
@@ -960,7 +960,7 @@ def tokenization_h5ad(adata_path, gene_dict_path, mean_path, specie=None, assay=
     adata_output, mean_matrix = standardize_adata_obs(adata, gene_dict, mean_matrix, specie, assay, cell_density)
 
     # No brain_region
-    if use_slice:
+    if use_dev_abs:
         adata_output.obs['brain_region'] = adata_output.obs["slice"] 
         adata_output.obs['brain_region_main'] = adata_output.obs["slice"] # user can change the cell label to other annotation
     else:
