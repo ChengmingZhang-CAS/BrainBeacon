@@ -2,7 +2,7 @@
 
 BrainBeacon: Cross-species foundation model for brain spatial transcriptomics.
 
-![BrainBeacon Overview](./docs/BrainBeacon_Overview.tiff)
+![BrainBeacon Overview](./docs/BrainBeacon_Overview.png)
 
 ## Overview
 BrainBeacon is a cross-species foundation model designed to integrate spatial transcriptomics data from multiple species and platforms. It provides a unified representation of spatially organized gene expression patterns and cellular microenvironments, enabling comparative analyses across the mammalian brain.
