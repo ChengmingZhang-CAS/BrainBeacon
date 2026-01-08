@@ -67,9 +67,12 @@ The full training and evaluation datasets are not included in this repository.
 
 ### Pretrained weights
 
-Pretrained model weights and checkpoints are not yet publicly released.
+Pretrained model weights and checkpoints can be downloaded from this Google Drive folder: https://drive.google.com/drive/folders/11d2xn1ZysKiqmjVEy_H8GAaT-GDwuERL?usp=drive_link
 
-Access to pretrained weights will be provided in the future. For early evaluation or collaboration, please contact the corresponding authors.
+This folder contains the following three files:
+	•	cellformer.config.json
+	•	epoch_0_step_8000000.pt
+	•	cellformer_epoch99.pt
 
 
 ## Citation
@@ -79,6 +82,8 @@ If you use BrainBeacon in your work, please cite:
 ```txt
 Zhang, C., Yang, Y., et al. BrainBeacon: A cross-species foundation model for single-cell resolved brain spatial transcriptomics.
 bioRxiv (2025). https://doi.org/10.1101/2025.07.08.663729
+        
+        
 ```
 
 
