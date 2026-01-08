@@ -41,6 +41,25 @@ urls.Documentation = "https://BrainBeacon.readthedocs.io/"
 urls.Homepage = "https://github.com/ChengmingZhang-CAS/BrainBeacon"
 urls.Source = "https://github.com/ChengmingZhang-CAS/BrainBeacon"
 
+[project.optional-dependencies]
+doc = [
+  "docutils>=0.8,!=0.18.*,!=0.19.*",
+  "ipykernel",
+  "ipython",
+  "myst-parser",
+  "myst-nb>=1.1",
+  # Until pybtex >0.24.0 releases: https://bitbucket.org/pybtex-devs/pybtex/issues/169/
+  "setuptools",
+  "sphinx>=8.1",
+  "sphinx-autodoc-typehints",
+  "sphinx-book-theme>=1",
+  "sphinx-copybutton",
+  "sphinx-tabs",
+  "sphinxcontrib-bibtex>=1",
+  "sphinxcontrib-katex",
+  "sphinxext-opengraph",
+]
+
 [dependency-groups]
 dev = [
   "pre-commit",
