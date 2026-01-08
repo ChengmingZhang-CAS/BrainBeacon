@@ -7,8 +7,8 @@
 :maxdepth: 1
 
 installation
-api.md
+api
 notebooks/index
-references.md
+references
 
 ```
