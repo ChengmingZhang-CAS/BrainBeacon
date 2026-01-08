@@ -6,10 +6,9 @@
 :hidden: true
 :maxdepth: 1
 
+installation
 api.md
-changelog.md
-contributing.md
+notebooks/index
 references.md
 
-notebooks/example
 ```
