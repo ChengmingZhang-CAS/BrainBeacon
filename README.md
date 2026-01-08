@@ -10,9 +10,8 @@
 [badge-tests]: https://img.shields.io/github/actions/workflow/status/ChengmingZhang-CAS/BrainBeacon/test.yaml?branch=main
 [badge-docs]: https://img.shields.io/readthedocs/BrainBeacon
 
-*A cross-species foundation model for single-cell–resolved brain spatial transcriptomics*
+*🧠 A cross-species foundation model for single-cell–resolved brain spatial transcriptomics*
 
----
 
 ## Overview
 
@@ -27,7 +26,6 @@ BrainBeacon adopts a dual-stage transformer architecture to learn unified molecu
 **Overview of the BrainBeacon framework and downstream applications.**  
 The framework integrates large-scale cross-species spatial brain atlases with a structured tokenization of spatial transcriptomics data, capturing sample metadata, intra-cell gene-rank information, and inter-cell spatial cues derived from local neighborhoods. A dual-stage transformer architecture models gene-level relations within cells and spatial dependencies among cells within tissue slices, enabling diverse downstream applications including spatial clustering, annotation, cross-species label transfer, and in silico niche perturbation.
 
----
 
 ## Installation
 
@@ -49,7 +47,6 @@ cd BrainBeacon
 pip install -e .
 ```
 
----
 
 ## Documentation
 
@@ -58,7 +55,6 @@ Documentation is available at:
 
 Tutorials and examples will be expanded.
 
----
 
 ## Data and Pretrained Weights
 
@@ -75,7 +71,6 @@ Pretrained model weights and checkpoints are not yet publicly released.
 
 Access to pretrained weights will be provided in the future. For early evaluation or collaboration, please contact the corresponding authors.
 
----
 
 ## Citation
 
@@ -86,7 +81,6 @@ Zhang, C., Yang, Y., et al. BrainBeacon: A cross-species foundation model for si
 bioRxiv (2025). https://doi.org/10.1101/2025.07.08.663729
 ```
 
----
 
 ## Contact
 
