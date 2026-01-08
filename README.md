@@ -70,6 +70,7 @@ The full training and evaluation datasets are not included in this repository.
 Pretrained model weights and checkpoints can be downloaded from this Google Drive folder: https://drive.google.com/drive/folders/11d2xn1ZysKiqmjVEy_H8GAaT-GDwuERL?usp=drive_link
 
 This folder contains the following three files:
+
 	•	cellformer.config.json
 	•	epoch_0_step_8000000.pt
 	•	cellformer_epoch99.pt
