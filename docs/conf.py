@@ -11,8 +11,6 @@ from datetime import datetime
 from importlib.metadata import metadata
 from pathlib import Path
 
-from sphinxcontrib import katex
-
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE / "extensions"))
 
@@ -21,7 +19,7 @@ sys.path.insert(0, str(HERE / "extensions"))
 
 # NOTE: If you installed your project in editable mode, this might be stale.
 #       If this is the case, reinstall it to refresh the metadata
-info = metadata("BrainBeacon")
+info = metadata("brainbeacon")
 project = info["Name"]
 author = info["Author"]
 copyright = f"{datetime.now():%Y}, {author}."
@@ -90,6 +88,7 @@ typehints_defaults = "braces"
 
 source_suffix = {
     ".rst": "restructuredtext",
+    ".md": "myst-nb",
     ".ipynb": "myst-nb",
     ".myst": "myst-nb",
 }
@@ -127,7 +126,12 @@ html_theme_options = {
 }
 
 pygments_style = "default"
-katex_prerender = shutil.which(katex.NODEJS_BINARY) is not None
+try:
+    from sphinxcontrib import katex
+    _node = getattr(katex, "NODEJS_BINARY", "node")
+    katex_prerender = shutil.which(_node) is not None
+except Exception:
+    katex_prerender = False
 
 nitpick_ignore = [
     # If building the documentation fails because of a missing link that is outside your control,
