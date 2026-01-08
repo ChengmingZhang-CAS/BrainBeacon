@@ -1,0 +1,43 @@
+{
+  "template": "https://github.com/scverse/cookiecutter-scverse",
+  "commit": "c8dc04c2f2c59b718dee8e744948bad4e39db43f",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "project_name": "BrainBeacon",
+      "package_name": "brainbeacon",
+      "project_description": "A cross-species foundation model for single-cell resolved brain spatial transcriptomics",
+      "author_full_name": "Chengming Zhang",
+      "author_email": "zhangchengming.utokyo@gmail.com",
+      "github_user": "ChengmingZhang-CAS",
+      "github_repo": "BrainBeacon",
+      "license": "MIT License",
+      "ide_integration": true,
+      "_copy_without_render": [
+        ".github/workflows/build.yaml",
+        ".github/workflows/test.yaml",
+        "docs/_templates/autosummary/**.rst"
+      ],
+      "_exclude_on_template_update": [
+        "CHANGELOG.md",
+        "LICENSE",
+        "README.md",
+        "docs/api.md",
+        "docs/index.md",
+        "docs/notebooks/example.ipynb",
+        "docs/references.bib",
+        "docs/references.md",
+        "src/**",
+        "tests/**"
+      ],
+      "_render_devdocs": false,
+      "_jinja2_env_vars": {
+        "lstrip_blocks": true,
+        "trim_blocks": true
+      },
+      "_template": "https://github.com/scverse/cookiecutter-scverse",
+      "_commit": "c8dc04c2f2c59b718dee8e744948bad4e39db43f"
+    }
+  },
+  "directory": null
+}
