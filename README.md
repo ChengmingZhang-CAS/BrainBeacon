@@ -61,9 +61,8 @@ Tutorials and examples will be expanded.
 ### Data overview
 
 A summary of the spatial transcriptomics datasets used for training and evaluation is provided as a tabulated overview, including species, platforms, and cell counts.
-Detailed dataset statistics are available in the repository as a standalone table file.
 
-The full training and evaluation datasets are not included in this repository.
+Detailed dataset statistics are provided as supplementary materials and are available via an external data repository (see Supplementary Table S1).
 
 ### Pretrained weights
 
