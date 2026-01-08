@@ -61,6 +61,13 @@ doc = [
   "sphinxext-opengraph",
 ]
 
+[tool.hatch.envs.hatch-test]
+# Optional: keep test deps here (pytest, coverage, etc.) if your template expects it
+# dependencies = ["pytest", "pytest-cov", "coverage[toml]"]
+
+[[tool.hatch.envs.hatch-test.matrix]]
+python = ["3.10"]
+
 [tool.ruff]
 line-length = 120
 src = [ "brainbeacon" ]
