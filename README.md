@@ -1,4 +1,4 @@
-# BrainBeacon
+# <img src="./docs/_static/logo.png" width="60"> BrainBeacon
 
 <p align="center">
   <img src="./docs/_static/logo.png" width="140" />
