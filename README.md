@@ -1,4 +1,4 @@
-<p align="center"><img src="./docs/_static/logo_long.png" alt="BrainBeacon" width="80%"/></p>
+<p align="center"><img src="./docs/_static/logo_long.png" alt="BrainBeacon" width="90%"/></p>
 
 [![Tests][badge-tests]][tests]
 [![Documentation][badge-docs]][documentation]
