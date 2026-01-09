@@ -1,7 +1,7 @@
 # BrainBeacon
 
 <p align="center">
-  <img src="_static/brainbeacon_graphical_abstract.png" alt="BrainBeacon graphical abstract" width="92%"/>
+  <img src="_static/graphical_abstract.png" alt="BrainBeacon graphical abstract" width="92%"/>
 </p>
 
 <p align="center"><b><i>
