@@ -10,18 +10,14 @@ import numba
 from scipy.sparse import issparse
 from sklearn.utils import sparsefuncs
 from sklearn.neighbors import NearestNeighbors
-import pyarrow.parquet as pq
 import pyarrow
 from tqdm import tqdm
-from config.config import Gene_dict_path
-from config.config import NUM_KNN_NEIGHBOR
-from config.config import specie_dict
-from config.config import technology_dict
-from config.config import MAX_LENGTH
-from config.config import AUX_TOKEN
+from brainbeacon.config.config import NUM_KNN_NEIGHBOR
+from brainbeacon.config.config import specie_dict
+from brainbeacon.config.config import technology_dict
+from brainbeacon.config.config import MAX_LENGTH
+from brainbeacon.config.config import AUX_TOKEN
 from config.config_train import config_train
-import argparse
-from joblib import numpy_pickle, dump
 import joblib
 import pyarrow.parquet as pq
 

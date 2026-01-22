@@ -11,13 +11,11 @@ from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from typing import Union, List
 
-from config.config_train_cdniche import config_train
 from brainbeacon.brain_beacon import BrainBeacon
 from brainbeacon.utils import tokenization_h5ad, process_parquet, set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.perturb import PerturbationReconstructionPipeline
-from config.config_cdniche import GENE_DICT_PATH
-from config.config_train_cdniche import config_train
+from brainbeacon.config.config_train_cdniche import config_train
 
 def masked_mean_pooling(transformer_output, mask):
     mask = mask.unsqueeze(-1)

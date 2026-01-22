@@ -8,9 +8,9 @@ from .experimental import symbol_to_ensembl
 import json
 import warnings
 import scanpy as sc
-from config.config_cdniche import Gene_dict_path, PRETRAIN_DIR
-from config.config_train_cdniche import config_train
-import copy
+from brainbeacon.config.config_cdniche import Gene_dict_path, PRETRAIN_DIR
+from brainbeacon.config.config_train_cdniche import config_train
+
 
 def extract_input_embeddings(
         bb_pretrain_path: str,

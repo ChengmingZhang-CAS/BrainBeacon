@@ -10,9 +10,7 @@ import numba
 import time
 import pickle
 import mygene
-import argparse
 import joblib
-from joblib import numpy_pickle, dump
 from pybiomart import Dataset
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -20,16 +18,16 @@ from tqdm import tqdm
 import scipy.sparse
 from scipy.sparse import issparse, csr_matrix
 from sklearn.utils import sparsefuncs
-from sklearn.neighbors import NearestNeighbors, KDTree
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 
-from config.config_cdniche import specie_dict
-from config.config_cdniche import technology_dict
-from config.config_cdniche import MAX_LENGTH
-from config.config_cdniche import AUX_TOKEN
-from config.config_cdniche import cell_density_bin_dict
-from config.config_train_cdniche import config_train
+from brainbeacon.config.config_cdniche import specie_dict
+from brainbeacon.config.config_cdniche import technology_dict
+from brainbeacon.config.config_cdniche import MAX_LENGTH
+from brainbeacon.config.config_cdniche import AUX_TOKEN
+from brainbeacon.config.config_cdniche import cell_density_bin_dict
+from brainbeacon.config.config_train_cdniche import config_train
 
 
 

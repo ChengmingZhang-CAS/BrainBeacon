@@ -1,14 +1,12 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
 import numpy as np
-from config.config_train_cdniche import config_train
+from brainbeacon.config.config_train_cdniche import config_train
 from ..embedder import OmicsEmbeddingLayer
 from ..utils.mask import MaskBuilder, NullMaskBuilder, HiddenMaskBuilder
 from ..encoder import setup_encoder
 from ..decoder import setup_decoder
 from ..latent import LatentModel, PreLatentNorm
-from ..latent.adversarial import AdversarialLatentLayer
 from ..objective import Objectives
 from ..head import setup_head
 

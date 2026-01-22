@@ -1,9 +1,4 @@
 import os
-import time
-import torch
-import joblib
-import shutil
-import torch.nn as nn
 import random
 import anndata as ad
 import scanpy as sc
@@ -14,20 +9,16 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, adjusted_rand_score
-from tqdm import tqdm
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
-from typing import Union, List
+from typing import List
 
-from config.config_train_cdniche import config_train
-from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.utils import tokenization_h5ad, process_parquet, set_seed
+from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.utils import set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.cell_type_annotation import CellTypeAnnotationPipeline
 from brainbeacon.pipeline.cell_embedding import run_tokenization, run_bb_inference
 
-from config.config_cdniche import GENE_DICT_PATH, BASE_DIR
-from config.config_train_cdniche import config_train
+from brainbeacon.config.config_cdniche import GENE_DICT_PATH, BASE_DIR
+from brainbeacon.config.config_train_cdniche import config_train
 from brainbeacon.utils import get_gene_mean_path
 
 def train_encoder_on_adata(
