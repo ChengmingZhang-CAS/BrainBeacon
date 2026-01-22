@@ -1,21 +1,13 @@
-import os
 import pandas as pd
 import numpy as np
 import scanpy as sc
 import matplotlib.pyplot as plt
-import argparse
 import warnings
 import seaborn as sns
-from sklearn.metrics import classification_report, adjusted_rand_score, accuracy_score, f1_score
-from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
-from sklearn.preprocessing import normalize
+from sklearn.neighbors import NearestNeighbors
 from scipy.sparse import csr_matrix
 from anndata import AnnData
-from typing import Literal, Dict, List, Tuple, Optional
-from sklearn.metrics import classification_report, adjusted_rand_score
 
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import normalize
 
 import os
@@ -23,15 +15,9 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # 固定配置，无需修改
 
 from typing import Literal
 
-import sys
+from brainbeacon.utils import ensure_ensembl_ids
 
-from config.config_cdniche import GENE_DICT_PATH
-from config.config_train_cdniche import config_train
-from brainbeacon.utils import get_gene_mean_path, spatial_expression_imputation, ensure_ensembl_ids
-from brainbeacon.pipeline.cell_embedding import run_bbcellformer_pipeline, run_bbcellformer_recon
-from brainbeacon.pipeline.cell_label_transfer import train_encoder_on_multi_adata, run_prediction_pipeline
-
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 
 # homology_df = pd.read_csv("/cluster/home/yangyiwen/mart_export.humanMacaqeMarmosetMouse.oneToOneOrth.ensembl91.20220428.csv")
 base_dir = "/raid/zhangchengming/BrainBeacon-master"

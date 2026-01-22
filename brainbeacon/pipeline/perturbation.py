@@ -1,5 +1,4 @@
 import os
-import numpy as np
 import pandas as pd
 import anndata as ad
 import scipy
@@ -7,7 +6,7 @@ import torch
 import pickle
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from typing import Union, List, Optional
+from typing import Union, List
 from tqdm import tqdm
 from anndata import AnnData
 from typing import Optional, Dict
@@ -15,11 +14,9 @@ import matplotlib.pyplot as plt
 import ot
 from ot.unbalanced import sinkhorn_unbalanced
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.preprocessing import normalize
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.brain_beacon import train_one_epoch
-from config.config_cdniche import GENE_LOOKUP_DIR
+from brainbeacon.config.config_cdniche import GENE_LOOKUP_DIR
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances, rbf_kernel
 from scipy.stats import wasserstein_distance

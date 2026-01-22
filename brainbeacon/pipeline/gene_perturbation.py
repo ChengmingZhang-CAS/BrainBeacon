@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
 from tqdm import tqdm
-from config.config_train_cdniche import config_train
+from brainbeacon.config.config_train_cdniche import config_train
 from brainbeacon.brain_beacon import BrainBeacon
-from config.config import GENE_LOOKUP_DIR
+from brainbeacon.config.config import GENE_LOOKUP_DIR
 import pickle
 
 class BrainBeaconCellCluster(nn.Module):
@@ -654,7 +654,6 @@ def run_go_enrichment(gene_list, outdir="enrichr_results", organism="Human", ver
     """
     import os
     import gseapy as gp
-    import pandas as pd
 
     os.makedirs(outdir, exist_ok=True)
 
