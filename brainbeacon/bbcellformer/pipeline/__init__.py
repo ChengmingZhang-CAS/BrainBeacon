@@ -8,8 +8,8 @@ from .experimental import symbol_to_ensembl
 import json
 import warnings
 import scanpy as sc
-from brainbeacon.config.config_cdniche import Gene_dict_path, PRETRAIN_DIR
-from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.configs.config import resolve_path
+from brainbeacon.configs.config_train import config_train
 
 
 def extract_input_embeddings(
@@ -53,11 +53,11 @@ def load_pretrain(
         overwrite_config: dict = None,
         pretrain_directory: str = None,
         bb_pretrain_path: str = None,  # Path to the BrainBeacon pretrain checkpoint,
-        cellformer_pretrain_path: str = None  # Path to the CellFormer checkpoint (optional, for backward compatibility)
+        cellformer_pretrain_path: str = None,  # Path to the CellFormer checkpoint (optional, for backward compatibility)
+        path_dict: dict | None = None,
 ):
-    pretrain_directory = pretrain_directory if pretrain_directory else PRETRAIN_DIR
-    # pretrain_directory = PRETRAIN_DIR
-    config_path = os.path.join(PRETRAIN_DIR, f'cellformer.config.json')
+    pretrain_directory = resolve_path("PRETRAIN_DIR", path_dict=path_dict)
+    config_path = os.path.join(pretrain_directory, f'cellformer.config.json')
     if cellformer_pretrain_path is not None:
         final_ckpt_path = cellformer_pretrain_path
         print(f"[INFO] Using explicitly provided CellFormer checkpoint: {final_ckpt_path}")
@@ -79,7 +79,9 @@ def load_pretrain(
     config.update(overwrite_config)
 
     """Load gene list from model_raw h5ad file"""
-    gene_schema = sc.read_h5ad(Gene_dict_path)
+    gene_dict_path = resolve_path("GENE_DICT_PATH", path_dict=path_dict)
+    esm_embedding_path = resolve_path("ESM_EMBED_PATH", path_dict=path_dict)
+    gene_schema = sc.read_h5ad(gene_dict_path)
     config['gene_list'] = gene_schema.var.index.tolist()
     if 'head_type' not in config:  # 确保 head_type 存在
         config['out_dim'] = len(config['gene_list'])
@@ -94,8 +96,8 @@ def load_pretrain(
         bb_model_state = None
         config['gene_emb'] = extract_input_embeddings(
             bb_pretrain_path=bb_pretrain_path,
-            esm_embedding_path=config_train["esm_embedding_path"],
-            gene_dict_path=Gene_dict_path,
+            esm_embedding_path=esm_embedding_path,
+            gene_dict_path=gene_dict_path,
             n_aux=config_train['n_aux']
         )
 
@@ -143,10 +145,10 @@ class Pipeline(ABC):
         # Load pretrain model_raw
         # self.model_raw = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory)
         if use_pretrained:
-            # Load pretrained model_raw from config + weights
+            # Load pretrained model_raw from configs + weights
             self.model = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory, bb_pretrain_path, cellformer_pretrain_path)
         else:
-            # Only build model_raw from config, without loading weights
+            # Only build model_raw from configs, without loading weights
             self.model = build_model_from_config(pretrain_prefix, overwrite_config, pretrain_directory)
         self.gene_list = None
         self.fitted = False

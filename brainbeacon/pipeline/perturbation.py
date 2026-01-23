@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import pandas as pd
 import anndata as ad
 import scipy
@@ -11,13 +12,11 @@ from tqdm import tqdm
 from anndata import AnnData
 from typing import Optional, Dict
 import matplotlib.pyplot as plt
-import ot
-from ot.unbalanced import sinkhorn_unbalanced
+
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.config.config_cdniche import GENE_LOOKUP_DIR
-import numpy as np
+from brainbeacon.configs.config import resolve_path
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances, rbf_kernel
 from scipy.stats import wasserstein_distance
 
@@ -119,7 +118,8 @@ class InSilicoPerturberPipeline:
         self.initialize_model()
 
     def _load_gene_lookup(self):
-        lookup_path = os.path.join(GENE_LOOKUP_DIR, "ensembl_to_all_idx.pkl")
+        gene_lookup_dir = resolve_path("GENE_LOOKUP_DIR")
+        lookup_path = os.path.join(gene_lookup_dir, "ensembl_to_all_idx.pkl")
         with open(lookup_path, "rb") as f:
             return pickle.load(f)
 
@@ -364,8 +364,6 @@ class InSilicoPerturberPipeline:
         dataset = self.load_dataset(data_path)
         loader = DataLoader(dataset, batch_size=config_train["batch_size"], shuffle=False, num_workers=4)
         return self.infer(loader, config_train)
-
-
 
 
 def apply_gene_perturbation(
@@ -838,6 +836,8 @@ def analyze_embedding_similarity_change_ot(
     b = np.ones((n_o,)) / n_o
 
     def get_projected(Z_target):
+        import ot
+        from ot.unbalanced import sinkhorn_unbalanced
         M = ot.dist(Z_y, Z_target, metric='euclidean') ** 2
         T = sinkhorn_unbalanced(a, b, M, reg=sinkhorn_reg, reg_m=uot_lambda)
         T_norm = T / T.sum(axis=0, keepdims=True)
@@ -1096,7 +1096,7 @@ def plot_cosine_to_centroids_with_perturb(
     cos_y_o, cos_o_o = cos_coords(X_ori[old_mask])
     cos_y_p, cos_o_p = cos_coords(X_perturb[pert_mask])
 
-    # ====== 作图 ======
+    # ====== plotting ======
     plt.figure(figsize=(6.5, 6))
 
     if not agg_by_celltype:

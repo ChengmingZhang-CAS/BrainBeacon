@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
-from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.configs.config_train import config_train
 from .omics_bb_perturb import OmicsEmbeddingLayerPerturb
 from ...utils.mask import MaskBuilder, NullMaskBuilder, HiddenMaskBuilder
 from ...encoder import setup_encoder

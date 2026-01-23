@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
 from tqdm import tqdm
-from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.configs.config_train import config_train
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.config.config import GENE_LOOKUP_DIR
+from brainbeacon.configs.config import resolve_path
 import pickle
 
 class BrainBeaconCellCluster(nn.Module):
@@ -171,7 +171,8 @@ class InSilicoPerturberPipeline:
         self.keep_unperturbed = keep_unperturbed
 
         # --- Load gene lookup table ---
-        lookup_path = os.path.join(GENE_LOOKUP_DIR, "ensembl_to_gene_idx.pkl")
+        gene_lookup_dir = resolve_path("GENE_LOOKUP_DIR")
+        lookup_path = os.path.join(gene_lookup_dir, "ensembl_to_all_idx.pkl")
         with open(lookup_path, "rb") as f:
             self.ensembl_to_gene_idx = pickle.load(f)
         self.idx_to_ensembl = {v: k for k, v in self.ensembl_to_gene_idx.items()}
