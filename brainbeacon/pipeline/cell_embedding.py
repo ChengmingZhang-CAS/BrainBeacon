@@ -532,6 +532,7 @@ def run_bbcellformer_recon(
     fit_epochs=500,  # can be set in the pipeline
     slice_sample=False,  # NEW
     enc_mod="flowformer",
+    path_dict: dict = None,
     mask_type="hidden",  # 'hidden' or 'input'
     output_attentions=False,  # whether to return attention weights
     save_embedding_path=None,  # Optional now
@@ -592,6 +593,7 @@ def run_bbcellformer_recon(
         pretrain_directory=cellformer_directory,
         bb_pretrain_path=bb_pretrain_path,
         cellformer_pretrain_path=cellformer_pretrain_path,
+        path_dict=path_dict,
         use_pretrain=True)
     if do_fit:
         # Only sample one slice if requested
@@ -665,6 +667,7 @@ def run_bbcellformer_pipeline(
     cellplm_ckpt_path: str,
     output_dir: str,
     output_prefix: str,
+    path_dict: dict = None,
     config_train: dict = None,
     config_update: dict = None,
     n_hvg: int = 1000,
@@ -758,6 +761,7 @@ def run_bbcellformer_pipeline(
         bb_embedding_path=bb_embedding_path,
         bb_pretrain_path=bb_ckpt_path,
         cellformer_version="cellformer",
+        path_dict = path_dict,
         cellformer_directory=os.path.dirname(cellplm_ckpt_path),
         device=device,
         cellformer_pretrain_path=cellplm_ckpt_path,
