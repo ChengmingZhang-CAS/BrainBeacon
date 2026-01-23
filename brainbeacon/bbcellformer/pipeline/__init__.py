@@ -140,13 +140,14 @@ class Pipeline(ABC):
                  pretrain_directory: str = None,
                  bb_pretrain_path: str = None,  # Path to the BrainBeacon pretrain checkpoint
                  cellformer_pretrain_path: str = None,
+                 path_dict: dict | None = None,
                  use_pretrained: bool = True,
                  ):
         # Load pretrain model_raw
         # self.model_raw = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory)
         if use_pretrained:
             # Load pretrained model_raw from configs + weights
-            self.model = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory, bb_pretrain_path, cellformer_pretrain_path)
+            self.model = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory, bb_pretrain_path, cellformer_pretrain_path, path_dict=path_dict)
         else:
             # Only build model_raw from configs, without loading weights
             self.model = build_model_from_config(pretrain_prefix, overwrite_config, pretrain_directory)

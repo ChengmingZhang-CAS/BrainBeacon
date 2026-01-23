@@ -130,6 +130,7 @@ class ReconstructPipeline(Pipeline):
                  pretrain_directory: str = './ckpt',
                  bb_pretrain_path: str = None,
                  cellformer_pretrain_path: str = None,
+                 path_dict: dict = None,
                  use_pretrain: bool = True,
                  ):
         super().__init__(
@@ -138,6 +139,7 @@ class ReconstructPipeline(Pipeline):
             pretrain_directory=pretrain_directory,
             bb_pretrain_path=bb_pretrain_path,
             cellformer_pretrain_path=cellformer_pretrain_path,
+            path_dict = path_dict,
             use_pretrained=use_pretrain
         )
         self.label_encoders = None
