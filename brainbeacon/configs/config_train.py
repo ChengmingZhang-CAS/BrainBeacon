@@ -32,7 +32,7 @@ config_train0 = {
     'use_esm_embedding': True,
     'ems_embedding_dim': 5120,
     'root_path': '/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST',
-    'esm_embedding_path': '/raid/zhangchengming/BrainBeacon-master/prior_knowledge/esm2_embeddings_d5120.pt',
+    'esm_embedding_path': '/raid/zhangchengming/BrainBeacon-master/prior_knowledge/xesm2_embeddings_d5120.pt',
     'pretrain_ckpt': None
 }
 

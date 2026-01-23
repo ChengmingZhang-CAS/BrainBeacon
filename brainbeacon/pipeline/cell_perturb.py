@@ -15,7 +15,7 @@ from brainbeacon.brain_beacon import BrainBeacon
 from brainbeacon.utils import tokenization_h5ad, process_parquet, set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.perturb import PerturbationReconstructionPipeline
-from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.configs.config_train import config_train
 
 def masked_mean_pooling(transformer_output, mask):
     mask = mask.unsqueeze(-1)
@@ -683,7 +683,7 @@ def run_bbcellformer_recon(
         # Only sample one slice if requested
         if slice_sample:
             # np.random.seed(42)
-            rng = np.random.RandomState(None)  # 使用局部随机性，每次运行都不一样
+            rng = np.random.RandomState(None)  # local random state
             chosen_slice = rng.choice(data.obs['slice'].unique())
             fit_data = data[data.obs['slice'] == chosen_slice].copy()
             print(f"Training only on slice: {chosen_slice} ({fit_data.n_obs} cells)")

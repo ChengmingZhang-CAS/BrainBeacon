@@ -998,13 +998,13 @@ class CellTypeAnnotationPipeline():
                     'model_state_dict': self.model.pretrain_model.state_dict()
                 }, pretrain_model_path)
 
-                print(f"✅ [Epoch {epoch+1}] Best model_raw saved to {best_model_path}")
+                print(f"[Epoch {epoch+1}] Best model_raw saved to {best_model_path}")
             else:
                 epochs_without_improvement += 1
-                print(f"⚠️ [Epoch {epoch+1}] No improvement. Patience counter: {epochs_without_improvement}/{patience}")
+                print(f"[Epoch {epoch+1}] No improvement. Patience counter: {epochs_without_improvement}/{patience}")
 
             if epochs_without_improvement >= patience:
-                print(f"⏹️ Early stopping at epoch {epoch+1}")
+                print(f"Early stopping at epoch {epoch+1}")
                 break
 
         self.fitted = True

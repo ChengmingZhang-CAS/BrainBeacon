@@ -11,17 +11,11 @@ from anndata import AnnData
 from sklearn.preprocessing import normalize
 
 import os
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # 固定配置，无需修改
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # for reproducibility with FAISS + CUDA
 
 from typing import Literal
-
 from brainbeacon.utils import ensure_ensembl_ids
-
 from typing import Dict, List, Optional
-
-# homology_df = pd.read_csv("/cluster/home/yangyiwen/mart_export.humanMacaqeMarmosetMouse.oneToOneOrth.ensembl91.20220428.csv")
-base_dir = "/raid/zhangchengming/BrainBeacon-master"
-homology_df = pd.read_csv(os.path.join(base_dir, "prior_knowledge", "mart_export.humanMacaqeMarmosetMouse.oneToOneOrth.ensembl91.20220428.csv"))
 
 
 def run_knn_voting(
@@ -205,6 +199,7 @@ def _preprocess_one_adata(
     smooth_st: bool = True,
     smooth_k: int = 25,
     add_genes: Optional[List[str]] = None,
+    homology_df: Optional[pd.DataFrame] = None
 ) -> AnnData:
     """Preprocess a single AnnData with optional smoothing, ID conversion, HVG, and forcing extra genes into HVG set."""
     print(f"[INFO] Preprocessing {info['data_name']}...")

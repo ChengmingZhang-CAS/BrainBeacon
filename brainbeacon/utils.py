@@ -22,14 +22,12 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 
-from brainbeacon.config.config_cdniche import specie_dict
-from brainbeacon.config.config_cdniche import technology_dict
-from brainbeacon.config.config_cdniche import MAX_LENGTH
-from brainbeacon.config.config_cdniche import AUX_TOKEN
-from brainbeacon.config.config_cdniche import cell_density_bin_dict
-from brainbeacon.config.config_train_cdniche import config_train
-
-
+from brainbeacon.configs.config import specie_dict
+from brainbeacon.configs.config import technology_dict
+from brainbeacon.configs.config import MAX_LENGTH
+from brainbeacon.configs.config import AUX_TOKEN
+from brainbeacon.configs.config import cell_density_bin_dict
+from brainbeacon.configs.config_train import config_train
 
 config_train["single_context_length"] = config_train["context_length"]
 
@@ -1243,7 +1241,7 @@ def process_parquet(input_file, output_path):
         output_path, prefix, f'exp_{config_train["batch_size"]}.job'))
 
 
-def get_gene_mean_path(base_dir: str, assay: str, use_metacell: bool = False) -> str:
+def get_gene_mean_path(prior_dir: str, assay: str, use_metacell: bool = False) -> str:
 
     assay = assay.lower()
     fname = None
@@ -1265,7 +1263,7 @@ def get_gene_mean_path(base_dir: str, assay: str, use_metacell: bool = False) ->
     if fname is None:
         raise ValueError(f"Unknown assay: {assay}. Please update assay_map.")
 
-    path = os.path.join(base_dir, "prior_knowledge", fname)
+    path = os.path.join(prior_dir, fname)
     if not os.path.exists(path):
         raise FileNotFoundError(f"gene_mean_path not found at: {path}")
 

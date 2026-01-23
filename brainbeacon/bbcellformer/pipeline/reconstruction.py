@@ -214,7 +214,7 @@ class ReconstructPipeline(Pipeline):
                 best_dict = deepcopy(self.model.state_dict())
                 # final_epoch = epoch
 
-            # if min(valid_loss) != min(valid_loss[-config['es']:]):
+            # if min(valid_loss) != min(valid_loss[-configs['es']:]):
             #     print(f'Early stopped. Best validation performance achieved at epoch {final_epoch}.')
             #     break
 

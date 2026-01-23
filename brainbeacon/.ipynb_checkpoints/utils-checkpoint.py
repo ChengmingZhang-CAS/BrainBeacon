@@ -12,11 +12,11 @@ from sklearn.utils import sparsefuncs
 from sklearn.neighbors import NearestNeighbors
 import pyarrow
 from tqdm import tqdm
-from brainbeacon.config.config import NUM_KNN_NEIGHBOR
-from brainbeacon.config.config import specie_dict
-from brainbeacon.config.config import technology_dict
-from brainbeacon.config.config import MAX_LENGTH
-from brainbeacon.config.config import AUX_TOKEN
+from brainbeacon.configs.config import NUM_KNN_NEIGHBOR
+from brainbeacon.configs.config import specie_dict
+from brainbeacon.configs.config import technology_dict
+from brainbeacon.configs.config import MAX_LENGTH
+from brainbeacon.configs.config import AUX_TOKEN
 from config.config_train import config_train
 import joblib
 import pyarrow.parquet as pq

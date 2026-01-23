@@ -11,14 +11,14 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, adjusted_rand_score
 from typing import List
 
-from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.configs.config_train import config_train
 from brainbeacon.utils import set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.cell_type_annotation import CellTypeAnnotationPipeline
 from brainbeacon.pipeline.cell_embedding import run_tokenization, run_bb_inference
 
-from brainbeacon.config.config_cdniche import GENE_DICT_PATH, BASE_DIR
-from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.configs.config import resolve_path
+from brainbeacon.configs.config_train import config_train
 from brainbeacon.utils import get_gene_mean_path
 
 def train_encoder_on_adata(
@@ -143,7 +143,8 @@ def train_encoder_on_multi_adata(
         batch_size: int = 64,
         save_all_epochs: bool = False,
         enc_mod: str = "flowformer",
-        device=None
+        path_dict: dict = None,
+        device=None,
 ) -> str:
     """
     Train CellFormer encoder on multiple datasets using BB embeddings as input.
@@ -173,9 +174,9 @@ def train_encoder_on_multi_adata(
             adata = sc.read_h5ad(adata_path)
             adata.obs["platform"] = assay
 
-            gene_dict_path = GENE_DICT_PATH
-            # BASE_DIR = "/raid/zhangchengming/BrainBeacon-master"
-            gene_mean_path = get_gene_mean_path(BASE_DIR, assay, use_metacell=True)
+            gene_dict_path = resolve_path("GENE_DICT_PATH", path_dict)
+            prior_dir = resolve_path("PRIOR_DIR", path_dict)
+            gene_mean_path = get_gene_mean_path(prior_dir, assay, use_metacell=True)
 
             output_dir_epoch = os.path.join(output_dir, data_name)
             os.makedirs(output_dir_epoch, exist_ok=True)

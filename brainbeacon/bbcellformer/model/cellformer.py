@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import numpy as np
-from brainbeacon.config.config_train_cdniche import config_train
+from brainbeacon.configs.config_train import config_train
 from ..embedder import OmicsEmbeddingLayer
 from ..utils.mask import MaskBuilder, NullMaskBuilder, HiddenMaskBuilder
 from ..encoder import setup_encoder

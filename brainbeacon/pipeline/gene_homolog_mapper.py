@@ -22,7 +22,7 @@ def map_to_human_orthologs(
         "marmoset": "cjacchus_gene_ensembl"
     }
 
-    # --- 检查是否支持该物种 ---
+    # Check if source species is supported
     if source_species not in species_map:
         raise ValueError(f"Unsupported species '{source_species}'. Supported: {list(species_map.keys())}")
 
