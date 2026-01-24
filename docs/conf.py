@@ -1,3 +1,24 @@
+import traceback
+
+print("RTD DEBUG: start import check")
+
+try:
+    import brainbeacon.pipeline.cell_embedding  # noqa
+    print("RTD DEBUG: cell_embedding OK")
+except Exception as e:
+    print("RTD DEBUG: cell_embedding FAILED:", repr(e))
+    traceback.print_exc()
+
+try:
+    import brainbeacon.pipeline.cell_label_transfer  # noqa
+    print("RTD DEBUG: label_transfer OK")
+except Exception as e:
+    print("RTD DEBUG: label_transfer FAILED:", repr(e))
+    traceback.print_exc()
+
+print("RTD DEBUG: end import check")
+
+
 # Configuration file for the Sphinx documentation builder.
 
 # This file only contains a selection of the most common options. For a full
