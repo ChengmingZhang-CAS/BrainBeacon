@@ -59,7 +59,9 @@ doc = [
   "sphinxcontrib-katex",
   "sphinxext-opengraph",
 ]
-
+bio = [
+  "mygene>=3.2.2",
+]
 [tool.hatch.envs.hatch-test]
 # Optional: keep test deps here (pytest, coverage, etc.) if your template expects it
 # dependencies = ["pytest", "pytest-cov", "coverage[toml]"]
