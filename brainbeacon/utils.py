@@ -10,7 +10,6 @@ import numba
 import time
 import pickle
 import joblib
-from pybiomart import Dataset
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
@@ -362,6 +361,7 @@ def ensure_ensembl_ids_raw(adata, species="hsapiens"):
     print(f"[INFO] Converting gene symbols to Ensembl IDs for {species} ...")
 
     # Get biomart dataset
+    from pybiomart import Dataset
     dataset = Dataset(name=f"{species}_gene_ensembl",
                       host="http://www.ensembl.org")
 
@@ -410,6 +410,7 @@ def ensure_ensembl_ids(adata, species="human"):
             "marmoset": "cjacchus",
         }
         try:
+            from pybiomart import Dataset
             bm_species = biomart_map[species]
             dataset = Dataset(name=f"{bm_species}_gene_ensembl", host="http://www.ensembl.org")
             mapping = dataset.query(attributes=["ensembl_gene_id", "external_gene_name"])
