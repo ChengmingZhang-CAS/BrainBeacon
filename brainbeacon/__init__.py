@@ -1,4 +1,3 @@
-# brainbeacon/__init__.py
 from importlib.metadata import PackageNotFoundError, version
 
 try:
