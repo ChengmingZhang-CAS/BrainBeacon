@@ -61,7 +61,7 @@ doc = [
 ]
 bio = [
   "mygene,
-  "pybiomart",
+  # "pybiomart",
 ]
 [tool.hatch.envs.hatch-test]
 # Optional: keep test deps here (pytest, coverage, etc.) if your template expects it
