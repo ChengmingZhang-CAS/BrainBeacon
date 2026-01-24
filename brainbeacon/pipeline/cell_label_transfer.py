@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, adjusted_rand_score
 from typing import List
 
-from brainbeacon.configs.config_train import config_train
 from brainbeacon.utils import set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.cell_type_annotation import CellTypeAnnotationPipeline
@@ -488,6 +487,88 @@ def run_label_transfer_pipeline(
     label_key='cell_label',
     device=None
 ):
+    """Run label transfer with an optional encoder-training stage.
+
+    This pipeline provides an end-to-end workflow for:
+    1) Training an encoder using ``encoder_adata_list``.
+    2) Running supervised label transfer from ``source_adata_list`` to ``target_adata_list``.
+
+    Notes
+    -----
+    The function uses the default training configuration from
+    ``brainbeacon.configs.config_train`` and applies runtime overrides via
+    ``config_update`` (recommended). Internally, it is recommended to copy the
+    global config before updating to avoid side effects across runs.
+
+    Parameters
+    ----------
+    encoder_adata_list : list[dict]
+        Dataset specifications used for encoder training (when ``do_train_encoder=True``).
+    source_adata_list : list[dict]
+        Source dataset specifications that include cell labels (supervision for transfer).
+    target_adata_list : list[dict]
+        Target dataset specifications to predict labels for.
+    bb_ckpt_path : str
+        Path to BrainBeacon pretrained checkpoint.
+    cellplm_ckpt_path : str
+        Path to the initial CellPLM/CellFormer checkpoint. If ``do_train_encoder=False``,
+        this checkpoint is used directly.
+    output_dir : str
+        Output directory for intermediate files and results.
+    output_prefix : str
+        Prefix used to name output files.
+
+    config_update : dict, optional
+        Overrides applied on top of the default training configuration.
+    n_hvg : int, default 1000
+        Number of HVGs to use when ``use_hvg=True``.
+    cd_weight : float, default 0.02
+        Cell-density token weight used by expression-weighted pooling.
+    use_hvg : bool, default True
+        Whether to use HVG selection in tokenization/training steps.
+    use_batch : bool, default True
+        Whether to enable batch-related options in annotation.
+    use_spatial : bool, default True
+        Whether to enable spatial-related options in annotation.
+    weight_mode : str, default "expression"
+        Pooling mode for embedding aggregation.
+    force_tokenize : bool, default True
+        Whether to force regeneration of intermediate tokenization outputs (project-specific).
+
+    do_fit : bool, default True
+        Whether to fit/fine-tune the annotation model.
+    fit_epochs : int, default 500
+        Number of epochs for fitting when ``do_fit=True``.
+    shuffle_each_epoch : bool, default True
+        Whether to shuffle samples each epoch during encoder training.
+    slice_sample : bool, optional
+        If True, select one slice for training (project-specific behavior).
+    enc_mod : str, default "flowformer"
+        Encoder module variant.
+
+    save_model : bool, default True
+        Whether to save the fitted model checkpoint.
+    save_model_path : str, optional
+        Path to save the model checkpoint. If None, a default path is used.
+
+    do_train_encoder : bool, default True
+        If True, train an encoder using ``encoder_adata_list`` before label transfer.
+    num_global_epochs : int, default 100
+        Number of global epochs for multi-dataset encoder training.
+    per_dataset_epochs : int, default 50
+        Number of epochs per dataset in multi-dataset encoder training.
+
+    label_key : str, default "cell_label"
+        Key in ``adata.obs`` used as the supervision label.
+    device : torch.device or str, optional
+        Device to run on. If None, uses CUDA if available, else CPU.
+
+    Returns
+    -------
+    target_adata : anndata.AnnData or dict
+        Predicted target AnnData (or a dict of targets) returned by the internal annotation routine.
+    """
+
     os.makedirs(output_dir, exist_ok=True)
     set_seed(42)
     if device is None:
