@@ -9,7 +9,6 @@ import math
 import numba
 import time
 import pickle
-import mygene
 import joblib
 from pybiomart import Dataset
 import pyarrow as pa
@@ -421,6 +420,7 @@ def ensure_ensembl_ids(adata, species="human"):
             print(f"[WARN] BioMart failed: {e}. Falling back to MyGene.info ...")
 
             # === Step 3: MyGene fallback ===
+            import mygene
             mg = mygene.MyGeneInfo()
             symbols = list(adata.var_names)
             mygene_map = {
