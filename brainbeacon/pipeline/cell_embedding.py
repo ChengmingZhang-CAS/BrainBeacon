@@ -691,6 +691,95 @@ def run_bbcellformer_pipeline(
     seed: int = 42,
     deterministic: bool = True
 ):
+    """Run the end-to-end BrainBeacon + CellFormer pipeline and return an updated AnnData.
+
+    This function performs:
+    1) Load AnnData from ``adata_path`` and set ``adata.obs["platform"] = assay``.
+    2) Tokenization (BrainBeacon tokenizer) and save token files under ``output_dir``.
+    3) BrainBeacon inference to produce cell embeddings (saved as ``*_bb_embeddings.npz``).
+    4) CellFormer reconstruction / fitting and save final embeddings and model (optional).
+
+    Parameters
+    ----------
+    adata_path : str
+        Path to the input AnnData (``.h5ad``).
+    specie : str
+        Species name used in tokenization (e.g., ``"human"``, ``"mouse"``).
+    assay : str
+        Platform / assay name. Will be stored to ``adata.obs["platform"]``.
+    gene_dict_path : str
+        Path to the BrainBeacon gene dictionary (``.h5ad``).
+    gene_mean_path : str
+        Path to gene mean statistics used by tokenizer.
+    bb_ckpt_path : str
+        Path to BrainBeacon pretrained checkpoint.
+    cellplm_ckpt_path : str
+        Path to CellPLM/CellFormer pretrained checkpoint.
+    output_dir : str
+        Output directory for intermediate files and results.
+    output_prefix : str
+        Prefix used to name output files.
+
+    path_dict : dict, optional
+        Optional path configuration passed to downstream reconstruction.
+    config_train : dict
+        Training/inference configuration. Must be provided.
+        This function will update it with internal defaults (e.g., ``weight_mode``, ``cd_weight``).
+    config_update : dict, optional
+        Optional overrides merged into ``config_train`` after defaults are set.
+
+    n_hvg : int, default 1000
+        Number of HVGs to use if ``use_hvg=True``.
+    cd_weight : float, default 0.02
+        Cell-density token weight used by expression-weighted pooling.
+    use_hvg : bool, default True
+        Whether to perform HVG selection in tokenization.
+    use_batch : bool, default True
+        Whether to enable batch-related options in CellFormer reconstruction.
+    use_spatial : bool, default True
+        Whether to enable spatial options in CellFormer reconstruction.
+    weight_mode : str, default "expression"
+        Pooling mode used for embedding aggregation (e.g., ``"expression"``).
+    force_tokenize : bool, default True
+        If True, redo tokenization and overwrite intermediate outputs.
+        Note: this flag also controls whether to skip BB inference when cached files exist.
+    use_dev_abs : bool, default False
+        Whether to use alternative dev/abs settings in tokenization (project-specific).
+
+    do_fit : bool, default True
+        Whether to fit/fine-tune CellFormer reconstruction.
+    fit_epochs : int, default 100
+        Number of epochs for fitting when ``do_fit=True``.
+    slice_sample : bool, optional
+        If True, select one slice for training (project-specific behavior).
+    enc_mod : str, default "flowformer"
+        Encoder module variant used by CellFormer.
+    mask_type : str, default "hidden"
+        Masking strategy, ``"hidden"`` or ``"input"``.
+    output_attentions : bool, default False
+        Whether to return/record attention weights during reconstruction.
+
+    save_model : bool, default True
+        Whether to save the trained/fitted CellFormer model.
+    save_model_path : str, optional
+        Path to save the model checkpoint. If None, a default path is used.
+    save_embedding_path : str, optional
+        Path to save final embeddings. If None, a default path is used.
+
+    device : torch.device or str, optional
+        Device to run on. If None, uses CUDA if available, else CPU.
+    seed : int, default 42
+        Random seed.
+    deterministic : bool, default True
+        Whether to enforce deterministic behavior (when supported).
+
+    Returns
+    -------
+    adata : anndata.AnnData
+        Updated AnnData object returned by ``run_bbcellformer_recon``.
+        Intermediate files (tokenization outputs, BB embeddings, final embeddings/model)
+        are saved under ``output_dir`` with the given ``output_prefix``.
+    """
     # ====== 1. Setup ======
     os.makedirs(output_dir, exist_ok=True)
     if seed is not None:
