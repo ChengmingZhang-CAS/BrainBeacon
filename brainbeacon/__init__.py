@@ -6,14 +6,4 @@ try:
 except PackageNotFoundError:
     __version__ = "dev"
 
-try:
-    from .pipeline.cell_embedding import run_bbcellformer_pipeline
-    from .pipeline.cell_label_transfer import run_label_transfer_pipeline
-
-    __all__ = [
-        "run_bbcellformer_pipeline",
-        "run_label_transfer_pipeline",
-    ]
-except Exception:
-    # Allow importing brainbeacon in minimal environments (e.g. docs/CI)
-    __all__ = []
+__all__ = ["__version__"]
