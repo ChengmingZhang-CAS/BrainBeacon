@@ -12,8 +12,7 @@ maintainers = [
   { name = "Chengming Zhang", email = "zhangchengming.utokyo@gmail.com" },
 ]
 authors = [
-  { name = "Chengming Zhang" },
-  { name = "Yiwen Yang" },
+  { name = "BrainBeacon Team" },
 ]
 requires-python = ">=3.10"
 dependencies = [
