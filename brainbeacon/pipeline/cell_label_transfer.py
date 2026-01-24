@@ -4,7 +4,6 @@ import anndata as ad
 import scanpy as sc
 import pandas as pd
 import torch
-import pymn
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -688,6 +687,7 @@ def run_prediction_pipeline(
 
     # --- 1. Run MetaNeighborUS ---
     print("--- 1. Running MetaNeighborUS to get predictions ---")
+    import pymn
     pymn.MetaNeighborUS(
         adata,
         study_col=study_col,
