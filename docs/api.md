@@ -1,6 +1,6 @@
 # API
 
-## Embeddings
+## Cell Embeddings
 
 ```{eval-rst}
 .. module:: brainbeacon
@@ -9,4 +9,4 @@
 .. autosummary::
     :toctree: generated
 
-    CellEmbeddingPipeline
+    run_bbcellformer_pipeline
