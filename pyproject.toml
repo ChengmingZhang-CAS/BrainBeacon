@@ -60,8 +60,7 @@ doc = [
   "sphinxext-opengraph",
 ]
 bio = [
-  "mygene,
-  # "pybiomart",
+  "mygene>=3.2.2",
 ]
 [tool.hatch.envs.hatch-test]
 # Optional: keep test deps here (pytest, coverage, etc.) if your template expects it
