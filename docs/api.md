@@ -3,7 +3,8 @@
 ## Cell Embedding
 
 ```{eval-rst}
-.. currentmodule:: brainbeacon.pipeline
+.. module:: brainbeacon
+.. currentmodule:: brainbeacon.pipeline.cell_embedding
 
 .. autosummary::
    :toctree: _autosummary
@@ -15,7 +16,8 @@
 ## Cell Label Transfer
 
 ```{eval-rst}
-.. currentmodule:: brainbeacon.pipeline
+.. module:: brainbeacon
+.. currentmodule:: brainbeacon.pipeline.cell_label_transfer
 
 .. autosummary::
    :toctree: _autosummary
