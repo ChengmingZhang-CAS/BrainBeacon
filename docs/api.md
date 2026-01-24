@@ -1,19 +1,21 @@
 # API
 
-## Cell Embeddings
+<!-- ## Cell Embeddings
 
-<!-- ```{eval-rst}
+```{eval-rst}
 .. module:: brainbeacon
+
 .. autosummary::
     :toctree: generated
 
     brainbeacon.pipeline.cell_embedding.run_bbcellformer_pipeline
-``` -->
+```
 
 ## Cell Label Transfer
-<!-- 
+
 ```{eval-rst}
 .. module:: brainbeacon
+
 .. autosummary::
     :toctree: generated
 
