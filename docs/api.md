@@ -5,21 +5,20 @@
 :maxdepth: 1
 :hidden:
 
-_autosummary/brainbeacon.pipeline.cell_embedding.run_bbcellformer_pipeline
-```
+run_bbcellformer_pipeline <_autosummary/brainbeacon.pipeline.cell_embedding.run_bbcellformer_pipeline>
+````
 
 ```{toctree}
 :caption: Cell Label Transfer
 :maxdepth: 1
 :hidden:
 
-_autosummary/brainbeacon.pipeline.cell_label_transfer.run_label_transfer_pipeline
+run_label_transfer_pipeline <_autosummary/brainbeacon.pipeline.cell_label_transfer.run_label_transfer_pipeline>
 ```
 
 ## Cell Embedding
 
 ```{eval-rst}
-.. module:: brainbeacon
 .. currentmodule:: brainbeacon.pipeline.cell_embedding
 
 .. autosummary::
@@ -27,13 +26,11 @@ _autosummary/brainbeacon.pipeline.cell_label_transfer.run_label_transfer_pipelin
    :nosignatures:
 
    run_bbcellformer_pipeline
-
 ```
 
 ## Cell Label Transfer
 
 ```{eval-rst}
-.. module:: brainbeacon
 .. currentmodule:: brainbeacon.pipeline.cell_label_transfer
 
 .. autosummary::
@@ -41,6 +38,5 @@ _autosummary/brainbeacon.pipeline.cell_label_transfer.run_label_transfer_pipelin
    :nosignatures:
 
    run_label_transfer_pipeline
-
 ```
 
