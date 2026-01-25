@@ -20,7 +20,7 @@ BrainBeacon is designed to support multi-species and multi-platform spatial tran
 :maxdepth: 1
 
 installation
-api
+api/index
 notebooks/index
 references
 
