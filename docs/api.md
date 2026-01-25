@@ -1,5 +1,21 @@
 # API
 
+```{toctree}
+:caption: Cell Embedding
+:maxdepth: 1
+:hidden:
+
+_autosummary/brainbeacon.pipeline.cell_embedding.run_bbcellformer_pipeline
+```
+
+```{toctree}
+:caption: Cell Label Transfer
+:maxdepth: 1
+:hidden:
+
+_autosummary/brainbeacon.pipeline.cell_label_transfer.run_label_transfer_pipeline
+```
+
 ## Cell Embedding
 
 ```{eval-rst}
@@ -27,3 +43,4 @@
    run_label_transfer_pipeline
 
 ```
+
