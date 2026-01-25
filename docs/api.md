@@ -8,6 +8,7 @@
 
 .. autosummary::
    :toctree: _autosummary
+   :nosignatures:
 
    run_bbcellformer_pipeline
 
@@ -21,6 +22,7 @@
 
 .. autosummary::
    :toctree: _autosummary
+   :nosignatures:
 
    run_label_transfer_pipeline
 
