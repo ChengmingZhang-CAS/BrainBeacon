@@ -12,14 +12,12 @@ from tqdm import tqdm
 from anndata import AnnData
 from typing import Optional, Dict
 import matplotlib.pyplot as plt
-
-from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
+from sklearn.neighbors import NearestNeighbors
 from brainbeacon.brain_beacon import BrainBeacon
 from brainbeacon.configs.config import resolve_path
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances, rbf_kernel
 from scipy.stats import wasserstein_distance
-
 
 def masked_mean_pooling(transformer_output, mask):
     mask = mask.unsqueeze(-1)
@@ -1056,7 +1054,7 @@ def compute_delta_cosine(adata_ori, adata_perturb, slice_young, slice_old, emb_k
 
     return pd.DataFrame(recs)
 
-def plot_cosine_to_centroids_with_perturb(
+def plot_cosine_to_centroids_with_perturb_old(
     adata_ori,
     adata_perturb,
     slice_young,
@@ -1113,6 +1111,106 @@ def plot_cosine_to_centroids_with_perturb(
         for cos_y, cos_o, label in [(cos_y_y, cos_o_y, "Young"), (cos_y_o, cos_o_o, "Old"), (cos_y_p, cos_o_p, "Perturb")]:
             ct = adata_ori.obs[celltype_key].values[young_mask] if label=="Young" else (
                  adata_ori.obs[celltype_key].values[old_mask] if label=="Old" else adata_perturb.obs[celltype_key].values[pert_mask])
+            df = pd.DataFrame({"celltype": ct, "cos_y": cos_y, "cos_o": cos_o})
+            df_mean = df.groupby("celltype")[["cos_y", "cos_o"]].mean().reset_index()
+            plt.scatter(df_mean["cos_y"], df_mean["cos_o"], s=50, alpha=0.9, label=label)
+
+    lim_min = min(cos_y_y.min(), cos_o_y.min(), cos_y_o.min(), cos_o_o.min(), cos_y_p.min(), cos_o_p.min())
+    lim_max = max(cos_y_y.max(), cos_o_y.max(), cos_y_o.max(), cos_o_o.max(), cos_y_p.max(), cos_o_p.max())
+    pad = 0.02
+    plt.plot([lim_min-pad, lim_max+pad], [lim_min-pad, lim_max+pad], ls="--", c="gray", lw=1)
+    plt.xlim(lim_min-pad, lim_max+pad)
+    plt.ylim(lim_min-pad, lim_max+pad)
+
+    plt.xlabel("Cosine similarity to young centroid")
+    plt.ylabel("Cosine similarity to old centroid")
+    plt.title(title)
+    plt.legend()
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.grid(alpha=0.2, ls="--")
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, bbox_inches="tight")
+    else:
+        plt.show()
+
+def plot_cosine_to_centroids_with_perturb(
+    adata_ori,
+    adata_perturb,
+    slice_young,
+    slice_old,
+    target_celltype=None,
+    celltype_key="cell_type",
+    emb_key="X_emb",
+    title="Cell state positioning relative to young and old centroids",
+    agg_by_celltype=False,
+    exclude_celltype=False,
+    save_path=None
+):
+
+    # ======embedding ======
+    X_ori = adata_ori.obsm[emb_key]
+    if hasattr(X_ori, "toarray"):
+        X_ori = X_ori.toarray()
+    X_perturb = adata_perturb.obsm[emb_key]
+    if hasattr(X_perturb, "toarray"):
+        X_perturb = X_perturb.toarray()
+
+    # ======mask ======
+    if exclude_celltype and target_celltype is not None:
+        mask_young = (
+            (adata_ori.obs["slice"].astype(str) == slice_young) &
+            (adata_ori.obs[celltype_key] != target_celltype)
+        )
+        mask_old_ori = (
+            (adata_ori.obs["slice"].astype(str) == slice_old) &
+            (adata_ori.obs[celltype_key] != target_celltype)
+        )
+        mask_old_pert = (
+            (adata_perturb.obs["slice"].astype(str) == slice_old) &
+            (adata_perturb.obs[celltype_key] != target_celltype)
+        )
+    else:
+        sl_ori = adata_ori.obs["slice"].astype(str).values
+        sl_perturb = adata_perturb.obs["slice"].astype(str).values
+        mask_young = sl_ori == slice_young
+        mask_old_ori = sl_ori == slice_old
+        mask_old_pert = sl_perturb == slice_old
+
+    X_unit_ori = normalize(X_ori, norm="l2", axis=1)
+    young_centroid = normalize(X_unit_ori[mask_young].mean(axis=0, keepdims=True), norm="l2", axis=1)[0]
+    old_centroid   = normalize(X_unit_ori[mask_old_ori].mean(axis=0, keepdims=True),   norm="l2", axis=1)[0]
+
+    def cos_coords(X):
+        X_unit = normalize(X, norm="l2", axis=1)
+        cos_y = X_unit @ young_centroid
+        cos_o = X_unit @ old_centroid
+        return cos_y, cos_o
+
+    cos_y_y, cos_o_y = cos_coords(X_ori[mask_young])
+    cos_y_o, cos_o_o = cos_coords(X_ori[mask_old_ori])
+    cos_y_p, cos_o_p = cos_coords(X_perturb[mask_old_pert])
+
+    plt.figure(figsize=(6.5, 6))
+
+    if not agg_by_celltype:
+        plt.scatter(cos_y_y, cos_o_y, s=20, c="#076a3aff", alpha=0.7, label="Young cells")
+        plt.scatter(cos_y_o, cos_o_o, s=20, c="#073f6aff", alpha=0.7, label="Old cells")
+        plt.scatter(cos_y_p, cos_o_p, s=20, c="#791f1fff", alpha=0.7, label="Perturb cells")
+
+        plt.scatter(np.mean(cos_y_y), np.mean(cos_o_y), c="#076a3aff", s=200, marker="*", edgecolor="white", linewidth=1, label="Young mean")
+        plt.scatter(np.mean(cos_y_o), np.mean(cos_o_o), c="#073f6aff", s=200, marker="*", edgecolor="white", linewidth=1, label="Old mean")
+        plt.scatter(np.mean(cos_y_p), np.mean(cos_o_p), c="#791f1fff", s=200, marker="*", edgecolor="white", linewidth=1, label="Perturb mean")
+
+    else:
+
+        for cos_y, cos_o, label, mask, adata in [
+            (cos_y_y, cos_o_y, "Young", mask_young, adata_ori),
+            (cos_y_o, cos_o_o, "Old", mask_old_ori, adata_ori),
+            (cos_y_p, cos_o_p, "Perturb", mask_old_pert, adata_perturb)
+        ]:
+            ct = adata.obs[celltype_key].values[mask]
             df = pd.DataFrame({"celltype": ct, "cos_y": cos_y, "cos_o": cos_o})
             df_mean = df.groupby("celltype")[["cos_y", "cos_o"]].mean().reset_index()
             plt.scatter(df_mean["cos_y"], df_mean["cos_o"], s=50, alpha=0.9, label=label)
