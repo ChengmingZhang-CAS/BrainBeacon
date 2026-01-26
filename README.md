@@ -46,10 +46,10 @@ pip install -e .
 
 ## Documentation
 
-Documentation is available at:
-[https://BrainBeacon.readthedocs.io](https://BrainBeacon.readthedocs.io)
+Full documentation is available at:
+[https://brainbeacon.readthedocs.io](https://brainbeacon.readthedocs.io)
 
-Tutorials and examples will be expanded.
+The documentation includes installation instructions, API references, and step-by-step tutorials for downstream tasks such as cell embedding, cross-species label transfer, and in silico niche perturbation.
 
 
 ## Data and Pretrained Weights
@@ -77,8 +77,7 @@ If you use BrainBeacon in your work, please cite:
 
 ```txt
 Zhang, C., Yang, Y., et al. BrainBeacon: A cross-species foundation model for single-cell resolved brain spatial transcriptomics.
-bioRxiv (2025). https://doi.org/10.1101/2025.07.08.663729
-        
+bioRxiv (2025). https://doi.org/10.1101/2025.07.08.663729        
         
 ```
 
