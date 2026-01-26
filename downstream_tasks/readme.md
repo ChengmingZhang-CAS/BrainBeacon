@@ -1,4 +1,4 @@
-Tutorial: Environment & Path Configuration
+# Tutorial: Environment & Path Configuration
 
 This tutorial requires several pretrained resources and reference files to be available before execution.
 Users need to download the required data and configure local paths accordingly.
