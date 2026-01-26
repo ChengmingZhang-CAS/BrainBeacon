@@ -256,7 +256,6 @@ class ZeroshotJoblibDataset(Dataset):
             else:
                 return self.__getitem__(idx + 1)
 
-
 class CellEmbeddingPipeline:
     def __init__(self, pretrain_ckpt: str, model_config: dict, device: Union[str, torch.device] = 'cpu'):
         """
@@ -796,6 +795,10 @@ def run_bbcellformer_pipeline(
         "masking_p": 0,
         "batch_size": 64,
         "expr_mode": None,
+        # "use_gene_id_emb": True,
+        # "use_homo_emb": True,
+        # "use_rna_type_emb": True,
+        # "use_esm_emb": True,
     })
     if config_update:
         config_train.update(config_update)
