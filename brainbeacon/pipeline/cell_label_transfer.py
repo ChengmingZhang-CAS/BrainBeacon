@@ -486,7 +486,7 @@ def run_label_transfer_pipeline(
     label_key='cell_label',
     device=None
 ):
-    """Run label transfer with an optional encoder-training stage.
+    """Run label transfer with an encoder-training stage.
 
     This pipeline provides an end-to-end workflow for:
     1) Training an encoder using ``encoder_adata_list``.
