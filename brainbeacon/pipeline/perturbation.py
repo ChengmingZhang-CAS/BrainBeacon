@@ -1234,3 +1234,417 @@ def plot_cosine_to_centroids_with_perturb(
         plt.savefig(save_path, bbox_inches="tight")
     else:
         plt.show()
+
+def analyze_embedding_similarity_change_OE(
+    adata_ori_result, adata_perturb_result,
+    target_slice_young, target_slice_old, target_celltype,
+    embedding_key="X_emb", gamma=1.0
+):
+    """
+    Compute cosine similarity, Euclidean distance, Wasserstein distance (EMD) and MMD 
+    between perturbed and original young cell embeddings, with old cells as reference.
+    """
+    # ---- Extract embeddings ----
+    emb_young_ori = adata_ori_result.obsm[embedding_key][
+        (adata_ori_result.obs["slice"] == target_slice_young) &
+        (adata_ori_result.obs["cell_type"] == target_celltype)
+    ]
+    emb_young_perturb = adata_perturb_result.obsm[embedding_key][
+        (adata_perturb_result.obs["slice"] == target_slice_young) &
+        (adata_perturb_result.obs["cell_type"] == target_celltype)
+    ]
+    emb_old = adata_ori_result.obsm[embedding_key][
+        (adata_ori_result.obs["slice"] == target_slice_old) &
+        (adata_ori_result.obs["cell_type"] == target_celltype)
+    ]
+
+    # ---- Mean embedding of old cells----
+    mean_old_emb = emb_old.mean(axis=0)
+
+    # ---- Cosine similarity ----
+    sim_ori = cosine_similarity(emb_young_ori, mean_old_emb.reshape(1, -1))
+    sim_perturb = cosine_similarity(emb_young_perturb, mean_old_emb.reshape(1, -1))
+
+    # ---- Euclidean distance ----
+    dist_ori = euclidean_distances(emb_young_ori, mean_old_emb.reshape(1, -1))
+    dist_perturb = euclidean_distances(emb_young_perturb, mean_old_emb.reshape(1, -1))
+
+    # ---- Wasserstein (1D per dimension, averaged) ----
+    emd_ori = np.mean([wasserstein_distance(emb_young_ori[:, i], emb_old[:, i]) 
+                       for i in range(emb_old.shape[1])])
+    emd_perturb = np.mean([wasserstein_distance(emb_young_perturb[:, i], emb_old[:, i]) 
+                           for i in range(emb_old.shape[1])])
+
+    # ---- MMD (with RBF kernel) ----
+    def compute_mmd(X, Y, gamma):
+        Kxx = rbf_kernel(X, X, gamma=gamma).mean()
+        Kyy = rbf_kernel(Y, Y, gamma=gamma).mean()
+        Kxy = rbf_kernel(X, Y, gamma=gamma).mean()
+        return Kxx + Kyy - 2 * Kxy
+
+    mmd_ori = compute_mmd(emb_young_ori, emb_old, gamma)
+    mmd_perturb = compute_mmd(emb_young_perturb, emb_old, gamma)
+
+    return {
+        "cosine": (sim_ori.mean(), sim_perturb.mean()),
+        "euclidean": (dist_ori.mean(), dist_perturb.mean()),
+        "emd": (emd_ori, emd_perturb),
+        "mmd": (mmd_ori, mmd_perturb),
+    }
+    
+def analyze_embedding_similarity_change_similarity_niche_OE(
+    adata_ori_result, adata_perturb_result,
+    target_slice_young, target_slice_old, target_celltype,
+    embedding_key="X_emb", gamma=1.0
+):
+    """
+    Compare niche embeddings before/after perturbation, when perturbation is applied to the young slice.
+    Excludes target cell type. Uses old niche as reference.
+    Returns cosine similarity, Euclidean distance, EMD (Wasserstein), and MMD.
+    """
+    # --- slice masks (exclude target_celltype) ---
+    mask_young_ori = (
+        (adata_ori_result.obs["slice"] == target_slice_young) &
+        (adata_ori_result.obs["cell_type"] != target_celltype)
+    )
+    mask_young_pert = (
+        (adata_perturb_result.obs["slice"] == target_slice_young) &
+        (adata_perturb_result.obs["cell_type"] != target_celltype)
+    )
+    mask_old = (
+        (adata_ori_result.obs["slice"] == target_slice_old) &
+        (adata_ori_result.obs["cell_type"] != target_celltype)
+    )
+
+    # --- extract embeddings ---
+    emb_young_ori = np.asarray(adata_ori_result.obsm[embedding_key][mask_young_ori])
+    emb_young_perturb = np.asarray(adata_perturb_result.obsm[embedding_key][mask_young_pert])
+    emb_old = np.asarray(adata_ori_result.obsm[embedding_key][mask_old])
+
+    # --- basic checks ---
+    if emb_young_ori.size == 0:
+        raise ValueError("No young cells found before perturbation.")
+    if emb_young_perturb.size == 0:
+        raise ValueError("No young cells found after perturbation.")
+    if emb_old.size == 0:
+        raise ValueError("No old cells found for reference.")
+
+    # --- handle NaNs robustly ---
+    emb_young_ori = np.nan_to_num(emb_young_ori, nan=0.0)
+    emb_young_perturb = np.nan_to_num(emb_young_perturb, nan=0.0)
+    emb_old = np.nan_to_num(emb_old, nan=0.0)
+
+    # --- mean vector of old niche ---
+    mean_old_emb = emb_old.mean(axis=0, keepdims=True)
+
+    # --- cosine similarity (higher = closer to old) ---
+    sim_ori = cosine_similarity(emb_young_ori, mean_old_emb).mean()
+    sim_perturb = cosine_similarity(emb_young_perturb, mean_old_emb).mean()
+
+    # --- Euclidean distance (lower = closer to old) ---
+    dist_ori = euclidean_distances(emb_young_ori, mean_old_emb).mean()
+    dist_perturb = euclidean_distances(emb_young_perturb, mean_old_emb).mean()
+
+    # --- EMD / Wasserstein (1D per dimension, averaged) ---
+    d = emb_old.shape[1]
+    emd_ori = np.mean([wasserstein_distance(emb_young_ori[:, i], emb_old[:, i]) for i in range(d)])
+    emd_perturb = np.mean([wasserstein_distance(emb_young_perturb[:, i], emb_old[:, i]) for i in range(d)])
+
+    # --- MMD with RBF kernel ---
+    def compute_mmd(X, Y, gamma_):
+        Kxx = rbf_kernel(X, X, gamma=gamma_).mean()
+        Kyy = rbf_kernel(Y, Y, gamma=gamma_).mean()
+        Kxy = rbf_kernel(X, Y, gamma=gamma_).mean()
+        return Kxx + Kyy - 2 * Kxy
+
+    mmd_ori = compute_mmd(emb_young_ori, emb_old, gamma)
+    mmd_perturb = compute_mmd(emb_young_perturb, emb_old, gamma)
+
+    return {
+        "cosine": (float(sim_ori), float(sim_perturb)),
+        "euclidean": (float(dist_ori), float(dist_perturb)),
+        "emd": (float(emd_ori), float(emd_perturb)),
+        "mmd": (float(mmd_ori), float(mmd_perturb)),
+    }
+
+def plot_cosine_to_centroids_with_perturb_OE(
+    adata_ori,
+    adata_perturb,
+    slice_young,
+    slice_old,
+    target_celltype=None,
+    celltype_key="cell_type",
+    emb_key="X_emb",
+    title="Cell state positioning relative to young and old centroids",
+    agg_by_celltype=False,
+    exclude_celltype=False,
+    save_path=None
+):
+    # ====== get embedding ======
+    X_ori = adata_ori.obsm[emb_key]
+    if hasattr(X_ori, "toarray"):
+        X_ori = X_ori.toarray()
+    X_perturb = adata_perturb.obsm[emb_key]
+    if hasattr(X_perturb, "toarray"):
+        X_perturb = X_perturb.toarray()
+
+    if exclude_celltype and target_celltype is not None:
+        mask_young_ori = (
+            (adata_ori.obs["slice"].astype(str) == slice_young) &
+            (adata_ori.obs[celltype_key] == target_celltype)
+        )
+        mask_young_pert = (
+            (adata_perturb.obs["slice"].astype(str) == slice_young) &
+            (adata_perturb.obs[celltype_key] == target_celltype)
+        )
+        mask_old = (
+            (adata_ori.obs["slice"].astype(str) == slice_old) &
+            (adata_ori.obs[celltype_key] == target_celltype)
+        )
+    else:
+        sl_ori = adata_ori.obs["slice"].astype(str).values
+        sl_perturb = adata_perturb.obs["slice"].astype(str).values
+        mask_young_ori = sl_ori == slice_young
+        mask_young_pert = sl_perturb == slice_young
+        mask_old = sl_ori == slice_old
+
+    X_unit_ori = normalize(X_ori, norm="l2", axis=1)
+    young_centroid = normalize(X_unit_ori[mask_young_ori].mean(axis=0, keepdims=True), norm="l2", axis=1)[0]
+    old_centroid   = normalize(X_unit_ori[mask_old].mean(axis=0, keepdims=True),   norm="l2", axis=1)[0]
+
+    def cos_coords(X):
+        X_unit = normalize(X, norm="l2", axis=1)
+        cos_y = X_unit @ young_centroid
+        cos_o = X_unit @ old_centroid
+        return cos_y, cos_o
+
+    cos_y_y, cos_o_y = cos_coords(X_ori[mask_young_ori])
+    cos_y_o, cos_o_o = cos_coords(X_ori[mask_old])
+    cos_y_p, cos_o_p = cos_coords(X_perturb[mask_young_pert])
+
+    plt.figure(figsize=(6.5, 6))
+
+    if not agg_by_celltype:
+        plt.scatter(cos_y_y, cos_o_y, s=40, c="#076a3aff", alpha=0.9, edgecolor="none", label="Young cells")
+        plt.scatter(cos_y_o, cos_o_o, s=40, c="#073f6aff", alpha=0.9, edgecolor="none",label="Old cells")
+        plt.scatter(cos_y_p, cos_o_p, s=40, c="#791f1fff", alpha=0.9, edgecolor="none",label="Perturbed Young cells")
+        plt.scatter(np.mean(cos_y_y), np.mean(cos_o_y), c="#076a3aff", s=200, marker="*", edgecolor="white", linewidth=1, label="Young mean")
+        plt.scatter(np.mean(cos_y_o), np.mean(cos_o_o), c="#073f6aff", s=200, marker="*", edgecolor="white", linewidth=1, label="Old mean")
+        plt.scatter(np.mean(cos_y_p), np.mean(cos_o_p), c="#791f1fff", s=200, marker="*", edgecolor="white", linewidth=1, label="Perturbed Young mean")
+
+    else:
+        for cos_y, cos_o, label, mask, adata in [
+            (cos_y_y, cos_o_y, "Young", mask_young_ori, adata_ori),
+            (cos_y_o, cos_o_o, "Old", mask_old, adata_ori),
+            (cos_y_p, cos_o_p, "Perturbed Young", mask_young_pert, adata_perturb)
+        ]:
+            ct = adata.obs[celltype_key].values[mask]
+            df = pd.DataFrame({"celltype": ct, "cos_y": cos_y, "cos_o": cos_o})
+            df_mean = df.groupby("celltype")[["cos_y", "cos_o"]].mean().reset_index()
+            plt.scatter(df_mean["cos_y"], df_mean["cos_o"], s=50, alpha=0.9, label=label)
+
+    lim_min = min(cos_y_y.min(), cos_o_y.min(), cos_y_o.min(), cos_o_o.min(), cos_y_p.min(), cos_o_p.min())
+    lim_max = max(cos_y_y.max(), cos_o_y.max(), cos_y_o.max(), cos_o_o.max(), cos_y_p.max(), cos_o_p.max())
+    pad = 0.02
+    plt.plot([lim_min-pad, lim_max+pad], [lim_min-pad, lim_max+pad], ls="--", c="gray", lw=1)
+    plt.xlim(lim_min-pad, lim_max+pad)
+    plt.ylim(lim_min-pad, lim_max+pad)
+
+    plt.xlabel("Cosine similarity to young centroid")
+    plt.ylabel("Cosine similarity to old centroid")
+    plt.title(title)
+    plt.legend()
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.grid(alpha=0.2, ls="--")
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, bbox_inches="tight")
+    else:
+        plt.show()
+        
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def plot_global_euclidean_shift(
+    adata_ori,
+    adata_perturb,
+    emb_key="X_emb",
+    title="Perturbation-Induced Changes in Euclidean Distance to Global Reference",
+    cmap="RdBu_r",
+    save_path=None
+):
+    # ====== get embedding ======
+    X_ori = adata_ori.obsm[emb_key]
+    if hasattr(X_ori, "toarray"):
+        X_ori = X_ori.toarray()
+
+    X_perturb = adata_perturb.obsm[emb_key]
+    if hasattr(X_perturb, "toarray"):
+        X_perturb = X_perturb.toarray()
+
+    global_centroid = X_ori.mean(axis=0, keepdims=True)
+
+    # ====== cal euc ======
+    dist_before = np.linalg.norm(X_ori - global_centroid, axis=1)
+    dist_after = np.linalg.norm(X_perturb - global_centroid, axis=1)
+
+    # ====== KDE  Plot ======
+    plt.figure(figsize=(7, 6))
+    sns.kdeplot(
+        x=dist_before,
+        y=dist_after,
+        fill=True,
+        cmap=cmap,
+        bw_adjust=0.8,
+        thresh=0.02,
+        levels=60
+    )
+
+    min_val = min(dist_before.min(), dist_after.min())
+    max_val = max(dist_before.max(), dist_after.max())
+    plt.plot([min_val, max_val], [min_val, max_val], '--', color='gray', lw=1.2)
+    plt.xlabel("Euclidean Distance to Global Centroid (Before Perturbation)", fontsize=12)
+    plt.ylabel("Euclidean Distance to Global Centroid (After Perturbation)", fontsize=12)
+    plt.title(title, fontsize=13, pad=10)
+    plt.grid(alpha=0.2, lw=0.6)
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, bbox_inches="tight", dpi=500)
+        plt.close()
+    else:
+        plt.show()
+        
+def plot_cosine_to_centroids_non_target(
+    adata_ori,
+    adata_perturb,
+    slice_young,
+    slice_old,
+    target_cell,
+    celltype_key="cell_type",
+    emb_key="X_emb",
+    title="Cell state positioning (non-target cells only)",
+    save_path=None
+):
+    """
+    Plot cosine-similarity scatter for NON-target cells only.
+    The target cell type is completely excluded from all computations and visualization.
+    """
+
+    # ====== Retrieve embeddings ======
+    X_ori = adata_ori.obsm[emb_key]
+    if hasattr(X_ori, "toarray"):
+        X_ori = X_ori.toarray()
+
+    X_perturb = adata_perturb.obsm[emb_key]
+    if hasattr(X_perturb, "toarray"):
+        X_perturb = X_perturb.toarray()
+
+    # ====== Build non-target masks ======
+    ct_ori = adata_ori.obs[celltype_key].astype(str).values
+    ct_perturb = adata_perturb.obs[celltype_key].astype(str).values
+
+    young_mask = (adata_ori.obs["slice"].astype(str) == slice_young) & (ct_ori != target_cell)
+    old_mask   = (adata_ori.obs["slice"].astype(str) == slice_old) & (ct_ori != target_cell)
+    pert_mask  = (adata_perturb.obs["slice"].astype(str) == slice_old) & (ct_perturb != target_cell)
+
+    print(f"[INFO] Excluding target cell type: {target_cell}")
+    print(
+        f"[INFO] Remaining cells - "
+        f"Young: {young_mask.sum()}, "
+        f"Old: {old_mask.sum()}, "
+        f"Perturb: {pert_mask.sum()}"
+    )
+
+    # ====== Compute centroids ======
+    X_unit_ori = normalize(X_ori, norm="l2", axis=1)
+
+    young_centroid = normalize(
+        X_unit_ori[young_mask].mean(axis=0, keepdims=True),
+        norm="l2",
+        axis=1,
+    )[0]
+
+    old_centroid = normalize(
+        X_unit_ori[old_mask].mean(axis=0, keepdims=True),
+        norm="l2",
+        axis=1,
+    )[0]
+
+    def cosine_coordinates(X):
+        """Return cosine similarity to young and old centroids."""
+        X_unit = normalize(X, norm="l2", axis=1)
+        cos_young = X_unit @ young_centroid
+        cos_old = X_unit @ old_centroid
+        return cos_young, cos_old
+
+    cos_y_y, cos_o_y = cosine_coordinates(X_ori[young_mask])
+    cos_y_o, cos_o_o = cosine_coordinates(X_ori[old_mask])
+    cos_y_p, cos_o_p = cosine_coordinates(X_perturb[pert_mask])
+
+    # ====== Plot ======
+    plt.figure(figsize=(6.5, 6))
+
+    plt.scatter(
+        cos_y_y, cos_o_y,
+        s=35, c="#076a3a", alpha=0.7, edgecolor="none",
+        label="Young cells",
+    )
+    plt.scatter(
+        cos_y_o, cos_o_o,
+        s=35, c="#073f6a", alpha=0.7, edgecolor="none",
+        label="Old cells",
+    )
+    plt.scatter(
+        cos_y_p, cos_o_p,
+        s=35, c="#791f1f", alpha=0.8, edgecolor="none",
+        label="Perturbed cells",
+    )
+
+    # Mean points for each group (star markers)
+    plt.scatter(
+        np.mean(cos_y_y), np.mean(cos_o_y),
+        c="#076a3a", s=200, marker="*", edgecolor="white",
+        linewidth=1, label="Young mean",
+    )
+    plt.scatter(
+        np.mean(cos_y_o), np.mean(cos_o_o),
+        c="#073f6a", s=200, marker="*", edgecolor="white",
+        linewidth=1, label="Old mean",
+    )
+    plt.scatter(
+        np.mean(cos_y_p), np.mean(cos_o_p),
+        c="#791f1f", s=200, marker="*", edgecolor="white",
+        linewidth=1, label="Perturb mean",
+    )
+
+    # Diagonal reference line and axis limits
+    all_cos = np.concatenate([
+        cos_y_y, cos_o_y,
+        cos_y_o, cos_o_o,
+        cos_y_p, cos_o_p,
+    ])
+    lim_min, lim_max = all_cos.min(), all_cos.max()
+    pad = 0.02
+
+    plt.plot(
+        [lim_min - pad, lim_max + pad],
+        [lim_min - pad, lim_max + pad],
+        ls="--", c="gray", lw=1,
+    )
+    plt.xlim(lim_min - pad, lim_max + pad)
+    plt.ylim(lim_min - pad, lim_max + pad)
+
+    plt.xlabel("Cosine similarity to young centroid")
+    plt.ylabel("Cosine similarity to old centroid")
+    plt.title(title)
+    plt.legend()
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.grid(alpha=0.2, ls="--")
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, bbox_inches="tight")
+    else:
+        plt.show()
