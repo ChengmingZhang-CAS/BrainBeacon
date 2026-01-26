@@ -45,7 +45,7 @@ DEFAULT_PATHS = {
 #     "BASE_DIR": "/need_file_path/BrainBeacon-master",
 #     "PRETRAIN_DIR": "/need_file_path/BrainBeacon-master/pretrained",
 #     "PRIOR_DIR": "/need_file_path/BrainBeacon-master/prior_knowledge",
-#     "GENE_DICT_PATH": "/rneed_file_path/prior_knowledge/model_h5ad_1211.h5ad",
+#     "GENE_DICT_PATH": "/need_file_path/prior_knowledge/model_h5ad_1211.h5ad",
 #     "GENE_LOOKUP_DIR": "/need_file_path/prior_knowledge/gene_lookup",
 #     "ESM_EMBED_PATH": "/need_file_path/prior_knowledge/esm2_embeddings_d5120.pt",
 # }
