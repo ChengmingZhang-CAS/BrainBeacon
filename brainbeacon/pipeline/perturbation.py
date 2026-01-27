@@ -369,34 +369,44 @@ def apply_gene_perturbation(
     gene_list,
     mode="knockout",
     value=None,
-    multiplier=2,  # default multiplier for overexpression
+    multiplier=2,
     target_obs_names=None,
     filter_by=None,
 ):
     """
-    Apply gene perturbation (knockout or overexpression) to selected cells in AnnData.
+    Apply gene perturbation (knockout or overexpress) to selected cells in an AnnData.
 
-    Parameters:
-        adata : AnnData
-            The input AnnData object.
-        gene_list : list of str
-            List of gene Ensembl IDs (must be in adata.var_names).
-        mode : str
-            Perturbation mode: "knockout" or "overexpress".
-        value : float or None
-            Fixed overexpression value (used if mode == "overexpress" and multiplier is None).
-        multiplier : float or None
-            Multiply the max expression of each gene to set overexpression value.
-        target_obs_names : list or None
-            Specific cells to perturb (based on adata.obs_names).
-        filter_by : dict or None
-            Alternative way to select cells by adata.obs fields (e.g., {"slice": "A", "cell_type": "B"}).
+    Parameters
+    ----------
+    adata : AnnData
+        Input AnnData.
+    gene_list : list[str]
+        Genes to perturb. Prefer Ensembl IDs in ``adata.var_names``. If a gene is not found and
+        ``adata.var['gene_symbol']`` exists, it will be mapped from gene symbol to a unique Ensembl ID.
+    mode : {"knockout", "overexpress"}, default "knockout"
+        Perturbation mode. ``"knockout"`` sets expression to 0; ``"overexpress"`` sets expression to
+        either ``value`` or ``max(gene)*multiplier``.
+    value : float or None, default None
+        Fixed value for ``mode="overexpress"``. If provided, overrides ``multiplier``.
+    multiplier : float or None, default 2
+        Used for ``mode="overexpress"`` when ``value`` is None.
+    target_obs_names : list[str] or None, default None
+        Cells to perturb by ``adata.obs_names``. Takes precedence over ``filter_by``.
+    filter_by : dict[str, str] or None, default None
+        Select cells by matching ``adata.obs`` fields (AND logic), e.g. ``{"slice": "A", "cell_type": "B"}``.
 
-    Returns:
-        perturbed_adata : AnnData
-            A copy of the input AnnData with modified expression.
-        perturbed_cells : pd.Index
-            The obs_names of the cells that were perturbed.
+    Returns
+    -------
+    perturbed_adata : AnnData
+        A copy of ``adata`` with modified ``.X``.
+    perturbed_cells : pandas.Index
+        The ``obs_names`` of perturbed cells.
+
+    Raises
+    ------
+    ValueError
+        If no cells are selected, a gene cannot be found/mapped, or overexpression has neither
+        ``value`` nor ``multiplier``.
     """
 
     perturbed_adata = adata.copy()
@@ -471,29 +481,31 @@ def inject_cells_into_niche(
     random_state: int = 42,
 ) -> AnnData:
     """
-    Inject donor cells into the spatial niche of target cells by perturbing coordinates.
+    Inject donor cells into the spatial niche of target cells by assigning donor coordinates
+    near randomly selected target cells.
 
     Parameters
     ----------
     target_adata : AnnData
-        The original AnnData containing the target spatial niche.
+        Target AnnData containing spatial coordinates in ``.obsm["spatial"]`` (shape: n_cells x 2).
     donor_adata : AnnData
-        The AnnData providing cells to inject into the target spatial context.
-    target_filter : dict, optional
-        Dictionary to filter target cells, e.g., {"cell_type": "OL-WM"}.
-    donor_filter : dict, optional
-        Dictionary to filter donor cells, e.g., {"age_group": "young"}.
-    n_inject : int, optional
-        Number of donor cells to inject. If None, use all donor cells after filtering.
-    spatial_jitter_std : float
-        Scaling factor for coordinate noise added to donor cells.
-    random_state : int
-        Random seed for reproducibility.
+        Donor AnnData providing cells to inject.
+    target_filter : dict[str, str] or None, default None
+        Filter for selecting target cells from ``target_adata.obs`` (AND logic).
+    donor_filter : dict[str, str] or None, default None
+        Filter for selecting donor cells from ``donor_adata.obs`` (AND logic).
+    n_inject : int or None, default None
+        Number of donor cells to inject. If None, inject all filtered donor cells.
+    spatial_jitter_std : float, default 1.0
+        Noise scale for donor coordinates. Noise std is ``median_nn_distance(target) * spatial_jitter_std``.
+    random_state : int, default 42
+        Random seed.
 
     Returns
     -------
     AnnData
-        A new AnnData object with original and injected donor cells with modified spatial coordinates.
+        Combined AnnData of target + injected donor cells. Adds ``obs["injected"]`` and
+        ``obs["injected_from_slice"]`` to indicate injected cells and their origin.
     """
 
     np.random.seed(random_state)
@@ -644,49 +656,49 @@ def inject_cells_theory(
 
     combined = ad.concat([target_rest, donor_sel], axis=0, join="outer", merge="same")
     return combined
-
-def analyze_embedding_similarity_change(
-    adata_ori_result, adata_perturb_result,
-    target_slice_young, target_slice_old, target_celltype,
-    embedding_key="X_emb"
-):
-    """
-    Compute cosine similarity and Euclidean distance between old and young cell embeddings
-    before and after perturbation.
-    """
-    # Extract embeddings
-    emb_young = adata_ori_result.obsm[embedding_key][
-        (adata_ori_result.obs["slice"] == target_slice_young) &
-        (adata_ori_result.obs["cell_type"] == target_celltype)
-    ]
-    emb_old_ori = adata_ori_result.obsm[embedding_key][
-        (adata_ori_result.obs["slice"] == target_slice_old) &
-        (adata_ori_result.obs["cell_type"] == target_celltype)
-    ]
-    emb_old_perturb = adata_perturb_result.obsm[embedding_key][
-        (adata_perturb_result.obs["slice"] == target_slice_old) &
-        (adata_perturb_result.obs["cell_type"] == target_celltype)
-    ]
-
-    # Mean embedding of young cells
-    mean_young_emb = emb_young.mean(axis=0)
-
-    # Cosine similarity
-    sim_ori = cosine_similarity(emb_old_ori, mean_young_emb.reshape(1, -1)).mean()
-    sim_perturb = cosine_similarity(emb_old_perturb, mean_young_emb.reshape(1, -1)).mean()
-
-    # Euclidean distance
-    dist_ori = euclidean_distances(emb_old_ori, mean_young_emb.reshape(1, -1)).mean()
-    dist_perturb = euclidean_distances(emb_old_perturb, mean_young_emb.reshape(1, -1)).mean()
-
-    return {
-        "similarity_before": sim_ori,
-        "similarity_after": sim_perturb,
-        "delta_similarity": sim_perturb - sim_ori,
-        "euclidean_before": dist_ori,
-        "euclidean_after": dist_perturb,
-        "delta_euclidean": dist_ori - dist_perturb  # positive: closer after
-    }
+#
+# def analyze_embedding_similarity_change(
+#     adata_ori_result, adata_perturb_result,
+#     target_slice_young, target_slice_old, target_celltype,
+#     embedding_key="X_emb"
+# ):
+#     """
+#     Compute cosine similarity and Euclidean distance between old and young cell embeddings
+#     before and after perturbation.
+#     """
+#     # Extract embeddings
+#     emb_young = adata_ori_result.obsm[embedding_key][
+#         (adata_ori_result.obs["slice"] == target_slice_young) &
+#         (adata_ori_result.obs["cell_type"] == target_celltype)
+#     ]
+#     emb_old_ori = adata_ori_result.obsm[embedding_key][
+#         (adata_ori_result.obs["slice"] == target_slice_old) &
+#         (adata_ori_result.obs["cell_type"] == target_celltype)
+#     ]
+#     emb_old_perturb = adata_perturb_result.obsm[embedding_key][
+#         (adata_perturb_result.obs["slice"] == target_slice_old) &
+#         (adata_perturb_result.obs["cell_type"] == target_celltype)
+#     ]
+#
+#     # Mean embedding of young cells
+#     mean_young_emb = emb_young.mean(axis=0)
+#
+#     # Cosine similarity
+#     sim_ori = cosine_similarity(emb_old_ori, mean_young_emb.reshape(1, -1)).mean()
+#     sim_perturb = cosine_similarity(emb_old_perturb, mean_young_emb.reshape(1, -1)).mean()
+#
+#     # Euclidean distance
+#     dist_ori = euclidean_distances(emb_old_ori, mean_young_emb.reshape(1, -1)).mean()
+#     dist_perturb = euclidean_distances(emb_old_perturb, mean_young_emb.reshape(1, -1)).mean()
+#
+#     return {
+#         "similarity_before": sim_ori,
+#         "similarity_after": sim_perturb,
+#         "delta_similarity": sim_perturb - sim_ori,
+#         "euclidean_before": dist_ori,
+#         "euclidean_after": dist_perturb,
+#         "delta_euclidean": dist_ori - dist_perturb  # positive: closer after
+#     }
 
 def analyze_gene_reconstruction_change(
     adata_ori_result,
