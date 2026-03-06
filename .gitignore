@@ -3,6 +3,11 @@
 *~
 buck-out/
 
+# IDE and editor settings
+.vscode/
+.github/
+.idea/
+
 # Compiled files
 .venv/
 __pycache__/
