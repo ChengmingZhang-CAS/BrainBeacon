@@ -8,6 +8,7 @@ from .experimental import symbol_to_ensembl
 import json
 import warnings
 import scanpy as sc
+from importlib.resources import files
 from brainbeacon.configs.config import resolve_path
 from brainbeacon.configs.config_train import config_train
 
@@ -57,7 +58,8 @@ def load_pretrain(
         path_dict: dict | None = None,
 ):
     pretrain_directory = resolve_path("PRETRAIN_DIR", path_dict=path_dict)
-    config_path = os.path.join(pretrain_directory, f'cellformer.config.json')
+    # config_path = os.path.join(pretrain_directory, f'cellformer.config.json')
+    config_path = files("brainbeacon.configs").joinpath("cellformer.config.json")
     if cellformer_pretrain_path is not None:
         final_ckpt_path = cellformer_pretrain_path
         print(f"[INFO] Using explicitly provided CellFormer checkpoint: {final_ckpt_path}")
