@@ -329,15 +329,61 @@ class CellEmbeddingPipeline:
         )
         return dataset
 
-    def infer(self, dataloader, config_train: dict):
+    def infer(
+        self,
+        dataloader,
+        config_train: dict,
+        return_attention: bool = False,
+        attention_layers: Union[str, List[int]] = "last",
+        attention_reduce: str = "mean_head",
+        attention_dtype: str = "float16"
+    ):
         """
         Run inference on new data using the pretrained model_raw.
+
+        Args:
+            dataloader: DataLoader for input data.
+            config_train: Configuration dictionary.
+            return_attention: If True, also return attention weights from all encoder layers.
+            attention_layers: Which layers to collect attention from. Options:
+                - "last": only the last layer (default, most memory efficient)
+                - "all": all layers
+                - [0, 5, -1]: specific layer indices (negative indexing supported)
+            attention_reduce: How to reduce attention weights to save memory. Options:
+                - "none": keep full (batch, nheads, seq, seq) - WARNING: very large!
+                - "mean_head": average over heads -> (batch, seq, seq) (default)
+                - "max_head": max over heads -> (batch, seq, seq)
+            attention_dtype: Data type for stored attention. Options:
+                - "float16": half precision (default, saves 50% memory)
+                - "float32": full precision
+
+        Returns:
+            If return_attention=False: list of (cell_idx, embedding) tuples.
+            If return_attention=True: tuple of (indexed_embeddings, attention_weights_list).
+                attention_weights_list: list of dicts, each containing:
+                    - 'cell_idx': cell indices for this batch
+                    - 'real_indices': gene token indices, shape (batch, seq_len)
+                    - 'attention': list of (layer_idx, weights) tuples
+                      weights shape depends on attention_reduce setting
         """
         # Switch to evaluation mode
         self.model.eval()
         # Load ESM embedding map
         esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location='cpu')
         indexed_embeddings = []
+        attention_weights_list = []
+
+        # Enable attention hooks only for target layers (saves memory)
+        if return_attention:
+            # Pass target_layers directly to enable_attention_hooks
+            # This avoids registering hooks for layers we don't need
+            if attention_layers == "all":
+                hook_target = None  # None means all layers
+            else:
+                hook_target = attention_layers  # "last" or list of indices
+
+            self.model.pretrain_model.enable_attention_hooks(target_layers=hook_target)
+
         with torch.no_grad():
             for real_indices, attention_mask, connect_comp, rna_type, cell_raw_idx, neighbor_gene_distribution, exp in tqdm(dataloader, desc="Processing batches", total=len(dataloader)):
                 real_indices = real_indices[0]
@@ -388,18 +434,107 @@ class CellEmbeddingPipeline:
                 # Collect indexed embeddings
                 indexed_embeddings.extend(zip(cell_raw_idx, output))
 
+                # Collect attention weights if requested
+                if return_attention:
+                    attn_weights = self.model.pretrain_model.get_attention_weights()
+                    processed_attn = []
+                    for layer_idx, w in attn_weights:
+                        # Reduce over heads to save memory
+                        if attention_reduce == "mean_head":
+                            w = w.mean(dim=1)  # (batch, seq, seq)
+                        elif attention_reduce == "max_head":
+                            w = w.max(dim=1).values  # (batch, seq, seq)
+                        # Convert dtype
+                        if attention_dtype == "float16":
+                            w = w.half()
+                        processed_attn.append((layer_idx, w.cpu()))
+                    attention_weights_list.append({
+                        'cell_idx': cell_raw_idx,
+                        'real_indices': real_indices.cpu(),
+                        'attention': processed_attn
+                    })
+                    self.model.pretrain_model.clear_attention_weights()
+
+        # Cleanup attention hooks
+        if return_attention:
+            self.model.pretrain_model.disable_attention_hooks()
+            return indexed_embeddings, attention_weights_list
+
         return indexed_embeddings
 
-    def run(self, data_paths: List[str], config_train: dict):
+    def run(
+        self,
+        data_paths: List[str],
+        config_train: dict,
+        return_attention: bool = False,
+        attention_layers: Union[str, List[int]] = "last",
+        attention_reduce: str = "mean_head",
+        attention_dtype: str = "float16"
+    ):
         """
-        Main method to run the entire training pipeline.
+        Main method to run the entire inference pipeline.
+
+        Args:
+            data_paths: Path to tokenized data directory.
+            config_train: Configuration dictionary.
+            return_attention: If True, also return attention weights.
+            attention_layers: Which layers to collect. Options:
+                - "last": only last layer (default, most efficient)
+                - "all": all layers (WARNING: large memory usage)
+                - [0, -1]: specific layer indices
+            attention_reduce: How to reduce attention. Options:
+                - "mean_head": average over heads (default)
+                - "max_head": max over heads
+                - "none": keep all heads (WARNING: large memory)
+            attention_dtype: "float16" (default) or "float32"
+
+        Returns:
+            If return_attention=False: list of (cell_idx, embedding) tuples.
+            If return_attention=True: tuple of (indexed_embeddings, attention_weights_list).
+
+        Example usage with attention weights:
+        ```python
+        pipeline = CellEmbeddingPipeline(pretrain_ckpt, model_config, device)
+
+        # Without attention (default)
+        embeddings = pipeline.run(data_paths, config_train)
+
+        # With attention (memory-efficient defaults: last layer, mean over heads, float16)
+        embeddings, attention_list = pipeline.run(
+            data_paths, config_train,
+            return_attention=True
+        )
+        # Each attention tensor shape: (batch, seq_len, seq_len) in float16
+        # Memory per sample: 1000*1000*2 bytes = 2MB (vs 1GB with all layers/heads)
+
+        # Get specific layers with full heads (more memory)
+        embeddings, attention_list = pipeline.run(
+            data_paths, config_train,
+            return_attention=True,
+            attention_layers=[0, -1],  # first and last layer
+            attention_reduce="none",   # keep all heads
+            attention_dtype="float32"
+        )
+
+        # Process attention with gene token info
+        for batch_attn in attention_list:
+            cell_indices = batch_attn['cell_idx']
+            gene_tokens = batch_attn['real_indices']  # (batch, seq_len) gene token IDs
+            for layer_idx, weights in batch_attn['attention']:
+                print(f"Layer {layer_idx}: {weights.shape}, genes: {gene_tokens.shape}")
+        ```
         """
         dataset = self.load_dataset(data_paths)
-        # data_loader = DataLoader(dataset, batch_size=config_train["batch_size"], shuffle=False, num_workers=4, prefetch_factor=2)
         data_loader = DataLoader(dataset, batch_size=config_train["batch_size"], shuffle=False, num_workers=0)
 
-        pred = self.infer(data_loader, config_train)
-        return pred
+        return self.infer(
+            data_loader,
+            config_train,
+            return_attention=return_attention,
+            attention_layers=attention_layers,
+            attention_reduce=attention_reduce,
+            attention_dtype=attention_dtype
+        )
 
 
 def run_tokenization(

@@ -8,10 +8,19 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 import time
 from torch.cuda.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import LambdaLR
 
 # Constants
 MASK_TOKEN = 0
 CLS_TOKEN = 2
+
+
+
+
+def get_linear_warmup_scheduler(optimizer, num_warmup_steps):
+    def lr_lambda(current_step):
+        return min(1.0, float(current_step) / float(max(1, num_warmup_steps)))
+    return LambdaLR(optimizer, lr_lambda)
 
 
 def save_checkpoint(epoch, global_step, model, optimizer, path):
@@ -34,7 +43,8 @@ class PretrainJoblibDataset(Dataset):
             connect_comp_files,
             rna_type_files,
             neighbor_gene_distribution_files,
-            file_prefix_list
+            file_prefix_list,
+            file_labels=None
     ):
         self.masked_indices_files = masked_indices_files
         self.mask_files = mask_files
@@ -44,6 +54,7 @@ class PretrainJoblibDataset(Dataset):
         self.rna_type_files = rna_type_files
         self.neighbor_gene_distribution_files = neighbor_gene_distribution_files
         self.file_prefix_list = file_prefix_list
+        self.file_labels = file_labels
         # Load metadata (e.g., lengths) for all files
         print(f"begin to read files length: {len(self.masked_indices_files)}")
         self.file_lengths = [len(joblib.load(f)) for f in self.masked_indices_files]
@@ -53,6 +64,11 @@ class PretrainJoblibDataset(Dataset):
     def __len__(self):
         """Total number of samples across all files"""
         return self.total_length
+
+    def get_label(self, idx):
+        """Return (platform_id, species_id) for the sample at global index idx."""
+        file_idx, _ = self._find_file_idx(idx)
+        return self.file_labels[file_idx]
 
     def _find_file_idx(self, idx):
         """Find the file corresponding to the global index"""
@@ -174,10 +190,16 @@ class BrainBeacon(nn.Module):
             use_gene_id_emb=True,
             use_homo_emb=True,
             use_rna_type_emb=True,
-            use_esm_emb=True  # add esm usage flag
+            use_esm_emb=True,  # add esm usage flag
+            use_pos_emb=True,  # add positional embedding usage flag
+            use_density_emb=True,  # add density token usage flag
+            density_token_idx=2  # density token position (default: 2 when specie=True, assay=True)
     ):
         super(BrainBeacon, self).__init__()
         self.use_esm_emb = use_esm_emb
+        self.use_pos_emb = use_pos_emb
+        self.use_density_emb = use_density_emb
+        self.density_token_idx = density_token_idx
         # self.embedding = GeneEmbedding(n_tokens, n_connect_comp, n_rna_type, n_neighbor, dim_model, n_aux)
         self.embedding = GeneEmbedding(
             n_tokens, n_connect_comp, n_rna_type, n_neighbor, dim_model, n_aux,
@@ -191,6 +213,10 @@ class BrainBeacon(nn.Module):
             batch_first=True
         )
         self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=nlayers)
+
+        # Attention hooks
+        self._attention_weights = []
+        self._attention_hooks = []
         self.loss = nn.CrossEntropyLoss()
         self.classifier_head = nn.Linear(dim_model, n_tokens + n_aux, bias=False)
         bias = nn.Parameter(torch.zeros(n_tokens + n_aux))  # each token has its own bias
@@ -219,6 +245,128 @@ class BrainBeacon(nn.Module):
                 torch.nn.init.xavier_normal_(m.weight)
                 torch.nn.init.zeros_(m.bias)
 
+    def enable_attention_hooks(self, target_layers=None):
+        """Register forward hooks to capture attention weights from encoder layers.
+
+        Args:
+            target_layers: Which layers to capture attention from. Options:
+                - None: all layers (default, but uses more memory)
+                - "last": only the last layer
+                - [0, -1]: list of layer indices (negative indexing supported)
+                - {0, 15}: set of layer indices
+
+        After calling this method, attention weights will be captured during forward pass.
+        Use `get_attention_weights()` to retrieve them and `clear_attention_weights()` to reset.
+
+        Example usage during inference:
+        ```python
+        model = BrainBeacon(...)
+        model.load_state_dict(torch.load("checkpoint.pt")["model_state_dict"])
+        model.eval()
+
+        # Enable attention capture for last layer only (recommended for memory efficiency)
+        model.enable_attention_hooks(target_layers="last")
+
+        with torch.no_grad():
+            # Forward pass
+            predictions = model(
+                x_gene_id, x_connect_id, x_rna_type,
+                attention_mask, esm_embedding, neighbor_gene_distribution
+            )
+
+            # Get attention weights from all layers
+            attention_weights = model.get_attention_weights()
+            # Returns: [(0, tensor), (1, tensor), ..., (nlayers-1, tensor)]
+            # Each tensor shape: (batch_size, nheads, seq_len, seq_len)
+
+            # Example: get attention from last layer, averaged across heads
+            last_layer_attn = attention_weights[-1][1]  # (batch, nheads, seq, seq)
+            avg_attn = last_layer_attn.mean(dim=1)      # (batch, seq, seq)
+
+            # Example: visualize attention for first sample, first head
+            import matplotlib.pyplot as plt
+            plt.imshow(attention_weights[0][1][0, 0].cpu().numpy())
+            plt.title("Layer 0, Head 0 Attention")
+            plt.colorbar()
+            plt.show()
+
+        # Clean up
+        model.clear_attention_weights()
+        model.disable_attention_hooks()
+        ```
+        """
+        self.disable_attention_hooks()  # Clear any existing hooks first
+        self._attention_weights = []
+        self._in_hook = False  # Flag to prevent recursive hook calls
+
+        # Determine which layers to hook
+        nlayers = len(self.encoder.layers)
+        if target_layers is None:
+            layers_to_hook = set(range(nlayers))
+        elif target_layers == "last":
+            layers_to_hook = {nlayers - 1}
+        elif isinstance(target_layers, (list, tuple)):
+            # Handle negative indices
+            layers_to_hook = {(l if l >= 0 else nlayers + l) for l in target_layers}
+        elif isinstance(target_layers, set):
+            layers_to_hook = {(l if l >= 0 else nlayers + l) for l in target_layers}
+        else:
+            raise ValueError(f"Invalid target_layers: {target_layers}")
+
+        def make_hook(layer_idx):
+            def hook_fn(module, args, kwargs, output):
+                # Prevent recursive calls when we re-run attention inside the hook
+                if self._in_hook:
+                    return output
+
+                self._in_hook = True
+                try:
+                    # Re-run attention with need_weights=True to get attention scores
+                    query = args[0] if len(args) > 0 else kwargs.get('query')
+                    key = args[1] if len(args) > 1 else kwargs.get('key', query)
+                    value = args[2] if len(args) > 2 else kwargs.get('value', query)
+                    key_padding_mask = kwargs.get('key_padding_mask', None)
+                    attn_mask = kwargs.get('attn_mask', None)
+
+                    with torch.no_grad():
+                        _, attn_weights = module(
+                            query, key, value,
+                            key_padding_mask=key_padding_mask,
+                            attn_mask=attn_mask,
+                            need_weights=True,
+                            average_attn_weights=False  # Return per-head weights: (batch, nheads, seq, seq)
+                        )
+                    self._attention_weights.append((layer_idx, attn_weights.detach()))
+                finally:
+                    self._in_hook = False
+                return output
+            return hook_fn
+
+        # Only register hooks for target layers
+        for idx, layer in enumerate(self.encoder.layers):
+            if idx in layers_to_hook:
+                hook = layer.self_attn.register_forward_hook(make_hook(idx), with_kwargs=True)
+                self._attention_hooks.append(hook)
+
+    def disable_attention_hooks(self):
+        """Remove all registered attention hooks."""
+        for hook in self._attention_hooks:
+            hook.remove()
+        self._attention_hooks = []
+
+    def get_attention_weights(self):
+        """Get captured attention weights from the last forward pass.
+
+        Returns:
+            list of tuples: [(layer_idx, attention_weights), ...]
+                attention_weights shape: (batch, nheads, seq_len, seq_len)
+        """
+        return self._attention_weights
+
+    def clear_attention_weights(self):
+        """Clear stored attention weights to free memory."""
+        self._attention_weights = []
+
     def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
         token_embedding = self.embedding(x_gene_id, x_connect_id, x_rna_type)
         # token_embedding += self.esm_embedding_projection(esm_embedding)
@@ -229,16 +377,22 @@ class BrainBeacon(nn.Module):
             # neighbor_embedding = self.neighbor_projection(neighbor_gene_distribution.unsqueeze(-1))
             # neighbor_embedding = self.neighbor_layer_norm(neighbor_embedding)
             token_embedding += neighbor_embedding
-        pos = self.pos.to(token_embedding.device)
-        pos_embedding = self.positional_embedding(pos)  # batch x (n_tokens) x dim_model
-        embeddings = self.dropout(token_embedding + pos_embedding)
+        if self.use_pos_emb:
+            pos = self.pos.to(token_embedding.device)
+            pos_embedding = self.positional_embedding(pos)  # batch x (n_tokens) x dim_model
+            embeddings = self.dropout(token_embedding + pos_embedding)
+        else:
+            embeddings = self.dropout(token_embedding)
+        # Zero out density token embedding if disabled
+        if not self.use_density_emb:
+            embeddings[:, self.density_token_idx, :] = 0
         transformer_output = self.encoder(embeddings, src_key_padding_mask=attention_mask)
         prediction = self.classifier_head(transformer_output)
         return prediction
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, writer, esm_embedding_map, global_step,
-                    logger, logdir, epoch):
+                    logger, logdir, epoch, lr_scheduler=None, max_steps=None):
     model.train()
     total_loss = 0.0
     scaler = GradScaler()
@@ -302,7 +456,12 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
                 print(f"Checkpoint saved at step {global_step} to {checkpoint_path}")
                 if logger:
                     logger.info(f"Checkpoint saved at step {global_step} to {checkpoint_path}")
-    return total_loss / len(dataloader)
+        if max_steps is not None and global_step >= max_steps:
+            if rank == 0:
+                if logger:
+                    logger.info(f"Reached max_steps={max_steps} at global_step={global_step}, stopping epoch early.")
+            break
+    return total_loss / max(len(dataloader), 1), global_step
 
 
 def validate(model, dataloader, criterion, device):
