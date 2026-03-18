@@ -4,7 +4,6 @@ import torch
 import joblib
 import shutil
 import torch.nn as nn
-import scanpy as sc
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -12,8 +11,33 @@ from torch.utils.data import Dataset
 from typing import Union, List
 
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.utils import tokenization_h5ad, set_seed
-from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
+
+
+def normalize_brainbeacon_model_config(model_config: dict) -> dict:
+    """Normalize legacy and current BrainBeacon config keys for inference."""
+    normalized = dict(model_config)
+
+    if "use_esm_emb" not in normalized and "use_esm_embedding" in normalized:
+        normalized["use_esm_emb"] = bool(normalized["use_esm_embedding"])
+    if "use_esm_embedding" not in normalized and "use_esm_emb" in normalized:
+        normalized["use_esm_embedding"] = bool(normalized["use_esm_emb"])
+
+    if "use_gene_id_emb" not in normalized and "gene_id" in normalized:
+        normalized["use_gene_id_emb"] = bool(normalized["gene_id"])
+    if "gene_id" not in normalized and "use_gene_id_emb" in normalized:
+        normalized["gene_id"] = bool(normalized["use_gene_id_emb"])
+
+    normalized.setdefault("neighbor_enhance", True)
+    normalized.setdefault("use_gene_id_emb", True)
+    normalized.setdefault("use_homo_emb", True)
+    normalized.setdefault("use_rna_type_emb", True)
+    normalized.setdefault("use_esm_emb", True)
+    normalized.setdefault("use_esm_embedding", bool(normalized["use_esm_emb"]))
+    normalized.setdefault("use_pos_emb", True)
+    normalized.setdefault("use_density_emb", True)
+    normalized.setdefault("density_token_idx", 2)
+
+    return normalized
 
 
 def masked_mean_pooling(transformer_output, mask):
@@ -126,7 +150,7 @@ def masked_weighted_pooling(
 class BrainBeaconCellCluster(nn.Module):
     def __init__(self, model_config):
         super().__init__()
-        self.model_config = model_config
+        self.model_config = normalize_brainbeacon_model_config(model_config)
         self.pretrain_model = BrainBeacon(
             dim_model=self.model_config["dim_model"],
             nheads=self.model_config['nheads'],
@@ -140,23 +164,35 @@ class BrainBeaconCellCluster(nn.Module):
             n_neighbor=self.model_config['num_neighbors'],
             esm_embedding_dim=self.model_config['ems_embedding_dim'],
             total_context_length=self.model_config['context_length'] * self.model_config['num_neighbors'],
-            use_gene_id_emb=self.model_config.get("use_gene_id_emb", True),  # Added: configurable switch
-            use_homo_emb=self.model_config.get("use_homo_emb", True),  # new
-            use_rna_type_emb=self.model_config.get("use_rna_type_emb", True),  # new
-            use_esm_emb=self.model_config.get("use_esm_emb", True)  # new
+            neighbor_enhance=self.model_config["neighbor_enhance"],
+            use_gene_id_emb=self.model_config["use_gene_id_emb"],
+            use_homo_emb=self.model_config["use_homo_emb"],
+            use_rna_type_emb=self.model_config["use_rna_type_emb"],
+            use_esm_emb=self.model_config["use_esm_emb"],
+            use_pos_emb=self.model_config["use_pos_emb"],
+            use_density_emb=self.model_config["use_density_emb"],
+            density_token_idx=self.model_config["density_token_idx"],
         )
 
-    def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution, sequence_mask):
-        token_embedding = self.pretrain_model.embedding(x_gene_id, x_connect_id, x_rna_type)
-        token_embedding += self.pretrain_model.esm_embedding_projection(esm_embedding)
-        if self.model_config['neighbor_enhance']:
-            neighbor_embedding = self.pretrain_model.neighbor_projection(neighbor_gene_distribution)
-            token_embedding += neighbor_embedding
-        pos = self.pretrain_model.pos.to(token_embedding.device)
-        pos_embedding = self.pretrain_model.positional_embedding(pos)  # batch x (n_tokens) x dim_model
-        embeddings = self.pretrain_model.dropout(token_embedding + pos_embedding)
-        transformer_output = self.pretrain_model.encoder(embeddings, src_key_padding_mask=attention_mask)
-        return transformer_output
+    def forward(
+        self,
+        x_gene_id,
+        x_connect_id,
+        x_rna_type,
+        attention_mask,
+        esm_embedding,
+        neighbor_gene_distribution,
+        sequence_mask=None
+    ):
+        del sequence_mask
+        return self.pretrain_model.encode(
+            x_gene_id,
+            x_connect_id,
+            x_rna_type,
+            attention_mask,
+            esm_embedding,
+            neighbor_gene_distribution,
+        )
 
 
 class ZeroshotJoblibDataset(Dataset):
@@ -262,7 +298,7 @@ class CellEmbeddingPipeline:
         Initialize the pipeline with model_raw and device settings.
         """
         self.device = device
-        self.model_config = model_config
+        self.model_config = normalize_brainbeacon_model_config(model_config)
         self.model = None
         self.pretrain_ckpt: str = pretrain_ckpt
         self.initialize_model()
@@ -566,6 +602,8 @@ def run_tokenization(
     """
     Tokenize input AnnData into BrainBeacon joblib bundles.
     """
+    from brainbeacon.utils import tokenization_h5ad
+
     if not os.path.exists(bb_token_dir):
         os.makedirs(bb_token_dir)
 
@@ -628,6 +666,7 @@ def run_bb_inference(
     save_path=None
 ):
     time0 = time.time()
+    config_train = normalize_brainbeacon_model_config(config_train)
     config_train["batch_size"] = 1  # Use batch size of 1 for inference
     pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config_train, device=device)
 
@@ -639,29 +678,30 @@ def run_bb_inference(
     pred_indices = np.array(pred_indices)
     pred_embeddings = np.array(pred_embeddings)
 
-    # Get embedding dimension
-    embedding_dim = pred_embeddings.shape[1] if pred_embeddings.size > 0 else 0
     # get obs_names from adata
     obs_names = np.array(adata.obs_names)  # Convert to NumPy array for fast operations
 
-    # Optimize assignment if orders match
+    # Require exact order match before saving or returning embeddings
     if np.array_equal(pred_indices, obs_names):
         print("obs_names and pred_indices are in the same order.")
         ordered_embeddings = pred_embeddings  # Direct assignment if order matches
     else:
-        print("warning: The order of obs_names and pred_indices do not match. Reordering embeddings...")
-        print("obs_names equal:", len(obs_names) == len(pred_indices))
-        # Initialize embeddings with zeros
-        ordered_embeddings = np.zeros((len(obs_names), embedding_dim))
+        if len(pred_indices) != len(obs_names):
+            raise ValueError(
+                "Embedding order check failed: the number of predicted embeddings does not match "
+                f"adata.obs_names ({len(pred_indices)} vs {len(obs_names)}). "
+                "Aborting without saving."
+            )
 
-        # Use NumPy for efficient lookup
-        match_mask = np.isin(obs_names, pred_indices)
-        matched_obs = obs_names[match_mask]
-
-        sorted_idx = np.argsort(pred_indices)  # Sort pred_indices for binary search
-        embedding_lookup = np.searchsorted(pred_indices[sorted_idx], matched_obs)  # Find positions
-
-        ordered_embeddings[match_mask] = pred_embeddings[sorted_idx][embedding_lookup]  # Assign values
+        mismatch_positions = np.flatnonzero(pred_indices != obs_names)
+        first_mismatch = int(mismatch_positions[0]) if mismatch_positions.size > 0 else -1
+        pred_value = pred_indices[first_mismatch] if first_mismatch >= 0 else "unknown"
+        obs_value = obs_names[first_mismatch] if first_mismatch >= 0 else "unknown"
+        raise ValueError(
+            "Embedding order check failed: predicted cell indices do not match adata.obs_names order. "
+            f"First mismatch at position {first_mismatch}: pred={pred_value}, obs={obs_value}. "
+            "Aborting without saving."
+        )
 
     if save_path is not None:
         np.savez_compressed(save_path, embeddings=ordered_embeddings)
@@ -694,6 +734,8 @@ def run_bbcellformer_recon(
     save_embedding_path=None,  # Optional now
     save_model_path=None,  # optional: save .pt model_raw weights
 ):
+    from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
+
     # Load AnnData file
     data = adata.copy()
     data.obs_names_make_unique()
@@ -933,6 +975,10 @@ def run_bbcellformer_pipeline(
         Intermediate files (tokenization outputs, BB embeddings, final embeddings/model)
         are saved under ``output_dir`` with the given ``output_prefix``.
     """
+    import scanpy as sc
+
+    from brainbeacon.utils import set_seed
+
     # ====== 1. Setup ======
     os.makedirs(output_dir, exist_ok=True)
     if seed is not None:

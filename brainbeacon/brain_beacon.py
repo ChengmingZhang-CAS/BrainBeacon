@@ -368,15 +368,12 @@ class BrainBeacon(nn.Module):
         """Clear stored attention weights to free memory."""
         self._attention_weights = []
 
-    def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
+    def encode(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
         token_embedding = self.embedding(x_gene_id, x_connect_id, x_rna_type)
-        # token_embedding += self.esm_embedding_projection(esm_embedding)
         if self.use_esm_emb:
             token_embedding += self.esm_embedding_projection(esm_embedding)
         if self.neighbor_enhance:
             neighbor_embedding = self.neighbor_projection(neighbor_gene_distribution)
-            # neighbor_embedding = self.neighbor_projection(neighbor_gene_distribution.unsqueeze(-1))
-            # neighbor_embedding = self.neighbor_layer_norm(neighbor_embedding)
             token_embedding += neighbor_embedding
         if self.use_pos_emb:
             pos = self.pos.to(token_embedding.device)
@@ -387,7 +384,17 @@ class BrainBeacon(nn.Module):
         # Zero out density token embedding if disabled
         if not self.use_density_emb:
             embeddings[:, self.density_token_idx, :] = 0
-        transformer_output = self.encoder(embeddings, src_key_padding_mask=attention_mask)
+        return self.encoder(embeddings, src_key_padding_mask=attention_mask)
+
+    def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
+        transformer_output = self.encode(
+            x_gene_id,
+            x_connect_id,
+            x_rna_type,
+            attention_mask,
+            esm_embedding,
+            neighbor_gene_distribution,
+        )
         prediction = self.classifier_head(transformer_output)
         return prediction
 
