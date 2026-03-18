@@ -1,6 +1,5 @@
 import os
 import random
-import warnings
 import numpy as np
 import torch
 import scanpy as sc
@@ -15,10 +14,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 import scipy.sparse
-from scipy import sparse as scipy_sparse
 from scipy.sparse import issparse, csr_matrix
 from sklearn.utils import sparsefuncs
-from sklearn.neighbors import BallTree, NearestNeighbors
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -46,28 +44,6 @@ platform_radius_map = {
     "SLIDESEQV2": 80,
     "XENIUM": 10,
     "STEREO": 200,
-}
-
-assay_alias_map = {
-    "merfish": "merfish",
-    "xenium": "xenium",
-    "starmap": "starmap",
-    "slideseqv2": "slideseqv2",
-    "slideseqv2": "slideseqv2",
-    "slideseq": "slideseqv2",
-    "stereo": "stereo",
-    "stereoseq": "stereo",
-    "stereoseqv1": "stereo",
-    "snrna": "snrna",
-    "scrna": "snrna",
-}
-
-mean_var_column_by_assay = {
-    "merfish": ("mean_merfish",),
-    "xenium": ("mean_xenium",),
-    "starmap": ("mean_starmap",),
-    "slideseqv2": ("mean_slideseqv2",),
-    "stereo": ("mean_stereo",),
 }
 
 def set_seed(seed: int, deterministic: bool = True):
@@ -115,140 +91,57 @@ def convert_spatial_to_um(adata, platform_name):
     """
     convert adata.obsm["spatial"] to the same unit (μm), and store the result in adata.obsm["spatial_um"]
     """
-    resolved_platform = assay_to_platform_name(platform_name)
-    if resolved_platform == "MERFISH":
+    if platform_name == "MERFISH":
         factor = estimate_resolution(adata.obsm["spatial"])
     else:
-        factor = platform_resolution_um.get(resolved_platform, 1.0)
+        factor = platform_resolution_um.get(platform_name, 1.0)
     adata.obsm["spatial_um"] = adata.obsm["spatial"] * factor
     return adata
-
-
-def _obsm_to_numpy(value):
-    if isinstance(value, pd.DataFrame):
-        array = value.to_numpy()
-    else:
-        array = np.asarray(value)
-    if array.ndim != 2:
-        raise TypeError(f"Expected a 2D array, got shape {array.shape}")
-    return array
-
-
-def _gene_type_column(var):
-    if "Gene_type_id" in var.columns:
-        return "Gene_type_id"
-    if "gene_type_id" in var.columns:
-        return "gene_type_id"
-    raise KeyError("Neither 'Gene_type_id' nor 'gene_type_id' found in adata.var.")
-
-
-def normalize_assay_name(assay):
-    if assay is None:
-        return None
-    normalized = str(assay).strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-    return assay_alias_map.get(normalized, str(assay).strip().lower())
-
-
-def assay_to_platform_name(assay):
-    normalized = normalize_assay_name(assay)
-    if normalized is None:
-        return None
-    platform_name_map = {
-        "merfish": "MERFISH",
-        "xenium": "XENIUM",
-        "starmap": "STARMAP",
-        "slideseqv2": "SLIDESEQV2",
-        "stereo": "STEREO",
-        "snrna": "STEREO",
-    }
-    return platform_name_map.get(normalized, str(assay).strip().upper())
-
-
-def mean_var_column(assay, available_columns=None):
-    normalized = normalize_assay_name(assay)
-    if normalized not in mean_var_column_by_assay:
-        return None
-    candidates = mean_var_column_by_assay[normalized]
-    if isinstance(candidates, str):
-        candidates = (candidates,)
-    if available_columns is None:
-        return candidates[0]
-    available = set(available_columns)
-    for column in candidates:
-        if column in available:
-            return column
-    candidate_text = ", ".join(candidates)
-    raise ValueError(
-        f"gene_dict is missing assay mean columns for assay={assay}. "
-        f"Tried: {candidate_text}"
-    )
-
-
-def normalize_gene_dict_var(gene_dict):
-    rename_candidates = {
-        "Gene_type_id": "gene_type_id",
-        "Gene type": "gene_type",
-    }
-    for source, target in rename_candidates.items():
-        if target not in gene_dict.var.columns and source in gene_dict.var.columns:
-            gene_dict.var[target] = gene_dict.var[source]
-    required_columns = {"gene_id", "homo_connect_id", "gene_type_id"}
-    missing = required_columns.difference(gene_dict.var.columns)
-    if missing:
-        missing_list = ", ".join(sorted(missing))
-        raise ValueError(f"gene_dict is missing required columns: {missing_list}")
-    return gene_dict
-
-
-def resolve_mean_var_column(assay, available_columns):
-    normalized = normalize_assay_name(assay)
-    if normalized not in mean_var_column_by_assay:
-        return None, False, ()
-    candidates = mean_var_column_by_assay[normalized]
-    if isinstance(candidates, str):
-        candidates = (candidates,)
-    column = mean_var_column(assay, available_columns)
-    used_fallback = column != candidates[0]
-    return column, used_fallback, candidates
-
-
-def load_gene_dict_and_mean(gene_dict_path, assay):
-    gene_dict = normalize_gene_dict_var(sc.read_h5ad(gene_dict_path))
-    mean_column, used_fallback, candidates = resolve_mean_var_column(assay, gene_dict.var.columns)
-    if mean_column is None:
-        return gene_dict, np.ones(gene_dict.n_vars, dtype=np.float32)
-    mean_values = np.nan_to_num(
-        gene_dict.var[mean_column].to_numpy(dtype=np.float32),
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-    return gene_dict, mean_values
 
 def compute_density_token(adata, radius_um=100, n_bins=5):
     """
     compute the density token for each cell
-    """
-    coords_all = _obsm_to_numpy(adata.obsm["spatial_um"])
+    """  
+    # get spatial coordinates
+    if isinstance(adata.obsm["spatial_um"], pd.DataFrame):
+        coords = adata.obsm["spatial_um"].to_numpy()
+    elif isinstance(adata.obsm["spatial_um"], np.ndarray):
+        coords = adata.obsm["spatial_um"]
+    else:
+        raise TypeError(f"Unsupported type for spatial_um: {type(adata.obsm['spatial_um'])}")
+    
     density_tokens = np.zeros(adata.n_obs, dtype=np.int8)
+    raw_density = np.zeros(adata.n_obs, dtype=np.float32)
 
     for sid in adata.obs["slice"].unique():
-        idx = np.flatnonzero((adata.obs["slice"] == sid).to_numpy())
-        if idx.size == 0:
-            continue
-        coords = np.asarray(coords_all[idx], dtype=np.float32)
-        counts = BallTree(coords).query_radius(coords, r=radius_um, count_only=True)
-        density_log = np.log1p(counts.astype(np.float32))
+        idx = adata.obs["slice"] == sid
+        coords = adata.obsm["spatial_um"][idx]
 
-        min_val = max(0.0, float(density_log.min()))
-        max_val = float(density_log.max())
+        if isinstance(coords, pd.DataFrame):
+            coords = coords.to_numpy()
+
+        nbrs = NearestNeighbors(radius=radius_um).fit(coords)
+        density = [len(nbrs.radius_neighbors(pt.reshape(1, -1), return_distance=False)[0]) for pt in coords]
+        density_log = np.log1p(density)
+
+        # binning
+        min_val = max(0, density_log.min())
+        max_val = density_log.max()
         if min_val == max_val:
-            max_val = min_val + 1e-3
+            max_val = min_val + 1e-3  # avoid duplicate bin edges
         bins = np.linspace(min_val, max_val, n_bins + 1)
-        token = np.digitize(density_log, bins[1:-1], right=True).astype(np.int8)
+        token = pd.cut(density_log, bins=bins, labels=False, include_lowest=True)
+
+        if isinstance(token, pd.Series):
+            token = token.fillna(0).to_numpy()
+        else:
+            token = np.nan_to_num(token, nan=0)
+
         density_tokens[idx] = token
+        raw_density[idx] = density
 
     adata.obs["density_token"] = density_tokens
+    # print(f"density_tokens: {density_tokens}")
     return adata, density_tokens
 
 
@@ -557,7 +450,7 @@ def ensure_ensembl_ids(adata, species="human"):
     mask = adata.var["ensembl_id"].notna()
     adata = adata[:, mask].copy()
     adata.var_names = adata.var["ensembl_id"]
-    adata.var = adata.var.drop(columns=["ensembl_id"])
+    adata.var.drop(columns=["ensembl_id"], inplace=True)
 
     print(f"[INFO] Converted {mask.sum()} / {len(mask)} genes to Ensembl IDs.")
     return adata
@@ -686,136 +579,139 @@ def compute_deviation_bin(adata_output, n_neighbors=50, n_bins=5):
     return adata_output
 
 
-def compute_deviation_bin_rapid(
-    adata_output,
-    n_neighbors=50,
-    n_bins=5,
-    batch_size=2000,
-    store_neighbor_gene_distribution=True,
-    neighbor_jobs=4,
-):
-    return compute_deviation_bin_rapid_v2(
-        adata_output,
-        n_neighbors=n_neighbors,
-        n_bins=n_bins,
-        batch_size=batch_size,
-        use_abs=False,
-        store_neighbor_gene_distribution=store_neighbor_gene_distribution,
-        zero_threshold=0.0,
-        neighbor_jobs=neighbor_jobs,
-    )
-
-
-def compute_deviation_bin_rapid_v2(
-    adata_output,
-    n_neighbors=50,
-    n_bins=5,
-    batch_size=2000,
-    use_abs=True,
-    store_neighbor_gene_distribution=True,
-    zero_threshold=1e-4,
-    neighbor_jobs=4,
-):
+def compute_deviation_bin_rapid(adata_output, n_neighbors=50, n_bins=5, batch_size=2000):
     assert "x" in adata_output.obs.columns and "y" in adata_output.obs.columns, "Spatial coordinates 'x', 'y' not found in .obs"
     assert "brain_region" in adata_output.obs.columns and "brain_region_main" in adata_output.obs.columns, "Missing region annotations"
 
-    slice_brain_area = (
-        adata_output.obs["brain_region"].astype(str) + "_" + adata_output.obs["brain_region_main"].astype(str)
+    adata_output.obs['slice_brain_area'] = adata_output.obs.apply(
+        lambda x: f"{x['brain_region']}_{x['brain_region_main']}", axis=1
     )
-    adata_output.obs["slice_brain_area"] = slice_brain_area
-    adata_output.obsm["deviation_bin"] = np.zeros((adata_output.n_obs, adata_output.n_vars), dtype=np.int8)
 
-    if store_neighbor_gene_distribution:
-        adata_output.obsm["neighbor_gene_distribution"] = np.zeros(
-            (adata_output.n_obs, adata_output.n_vars),
-            dtype=np.float32,
-        )
+    adata_output.obsm['deviation_bin'] = np.zeros((adata_output.n_obs, adata_output.n_vars), dtype=np.int8)
+    adata_output.obsm['neighbor_gene_distribution'] = np.zeros((adata_output.n_obs, adata_output.n_vars), dtype=np.float32)
 
-    x_raw = adata_output.X.copy()
-    x_norm = sf_normalize(adata_output.X)
-    x_norm = x_norm.tocsr() if scipy.sparse.issparse(x_norm) else np.asarray(x_norm, dtype=np.float32)
+    X_raw = adata_output.X.copy()
+    adata_output.X = sf_normalize(adata_output.X)
+    X = adata_output.X.tocsr() if scipy.sparse.issparse(adata_output.X) else np.asarray(adata_output.X)
+
     full_deviation = np.full((adata_output.n_obs, adata_output.n_vars), np.nan, dtype=np.float32)
-    coords_all = adata_output.obs[["x", "y"]].to_numpy(dtype=np.float32, copy=False)
 
-    for group in pd.unique(slice_brain_area):
-        index_array = np.flatnonzero((slice_brain_area == group).to_numpy())
-        if index_array.size == 0:
-            continue
+    for idx in adata_output.obs["slice_brain_area"].unique():
+        knn_sample_obs = adata_output.obs.loc[adata_output.obs["slice_brain_area"] == idx]
+        coords = knn_sample_obs[["x", "y"]].values
+        index_array = adata_output.obs.index.get_indexer(knn_sample_obs.index)
+        num_sample = min(len(index_array), n_neighbors)
 
-        coords = coords_all[index_array]
-        num_sample = min(index_array.size, n_neighbors)
-        if num_sample == 0:
-            continue
-
-        nbrs = NearestNeighbors(
-            n_neighbors=num_sample,
-            algorithm="ball_tree",
-            n_jobs=neighbor_jobs,
-        ).fit(coords)
+        nbrs = NearestNeighbors(n_neighbors=num_sample, algorithm='ball_tree', n_jobs=4).fit(coords)
         _, all_indices = nbrs.kneighbors(coords)
 
-        if scipy_sparse.issparse(x_norm):
-            x_group = x_norm[index_array]
-            for start in range(0, index_array.size, batch_size):
-                end = min(start + batch_size, index_array.size)
-                current_size = end - start
-                batch_neighbors = all_indices[start:end]
+        # batch-wise processing to avoid memory issues
+        for start in range(0, len(index_array), batch_size):
+            end = min(start + batch_size, len(index_array))
+            batch_idx = index_array[start:end]
+            batch_neighbors = all_indices[start:end]
 
-                row_idx = np.repeat(np.arange(current_size), num_sample)
-                col_idx = batch_neighbors.reshape(-1)
-                weights = np.full(row_idx.shape[0], 1.0 / num_sample, dtype=np.float32)
-                weight_matrix = scipy_sparse.csr_matrix(
-                    (weights, (row_idx, col_idx)),
-                    shape=(current_size, index_array.size),
-                )
+            # get the mean expression of neighbors
+            if scipy.sparse.issparse(X):
+                batch_neighbor_expr = np.stack([
+                    X[ni].mean(axis=0).A1 for ni in batch_neighbors
+                ])
+                batch_cell_expr = X[batch_idx].toarray()
+            else:
+                batch_neighbor_expr = X[batch_neighbors].mean(axis=1)
+                batch_cell_expr = X[batch_idx]
 
-                batch_neighbor_expr = (weight_matrix @ x_group).toarray().astype(np.float32, copy=False)
-                batch_cell_expr = x_group[start:end].toarray().astype(np.float32, copy=False)
-                deviation = np.abs(batch_cell_expr - batch_neighbor_expr) if use_abs else batch_cell_expr - batch_neighbor_expr
+            deviation = batch_cell_expr - batch_neighbor_expr
+            zero_mask = (batch_cell_expr == 0) & (batch_neighbor_expr == 0)
+            deviation[zero_mask] = np.nan
 
-                if zero_threshold > 0:
-                    both_low_mask = (batch_cell_expr < zero_threshold) & (batch_neighbor_expr < zero_threshold)
-                else:
-                    both_low_mask = (batch_cell_expr == 0) & (batch_neighbor_expr == 0)
-                deviation[both_low_mask] = np.nan
-                full_deviation[index_array[start:end]] = deviation
+            full_deviation[batch_idx] = deviation
+            adata_output.obsm['neighbor_gene_distribution'][batch_idx] = batch_neighbor_expr
 
-                if store_neighbor_gene_distribution:
-                    batch_neighbor_expr[np.abs(batch_neighbor_expr) < 1e-6] = 0
-                    adata_output.obsm["neighbor_gene_distribution"][index_array[start:end]] = batch_neighbor_expr
-        else:
-            x_group = np.asarray(x_norm[index_array], dtype=np.float32)
-            for start in range(0, index_array.size, batch_size):
-                end = min(start + batch_size, index_array.size)
-                batch_neighbors = all_indices[start:end]
-                batch_cell_expr = x_group[start:end]
-                batch_neighbor_expr = x_group[batch_neighbors].mean(axis=1, dtype=np.float32)
-                deviation = np.abs(batch_cell_expr - batch_neighbor_expr) if use_abs else batch_cell_expr - batch_neighbor_expr
-
-                if zero_threshold > 0:
-                    both_low_mask = (batch_cell_expr < zero_threshold) & (batch_neighbor_expr < zero_threshold)
-                else:
-                    both_low_mask = (batch_cell_expr == 0) & (batch_neighbor_expr == 0)
-                deviation[both_low_mask] = np.nan
-                full_deviation[index_array[start:end]] = deviation
-
-                if store_neighbor_gene_distribution:
-                    batch_neighbor_expr[np.abs(batch_neighbor_expr) < 1e-6] = 0
-                    adata_output.obsm["neighbor_gene_distribution"][index_array[start:end]] = batch_neighbor_expr
-
-    quantile_points = np.linspace(0, 1, n_bins + 1, dtype=np.float32)[1:-1]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        quantiles = np.nanquantile(full_deviation, quantile_points, axis=0)
-
+    # calculate quantiles for each gene (0 = no deviation signal)
     deviation_bin = np.zeros_like(full_deviation, dtype=np.int8)
-    valid_mask = ~np.isnan(full_deviation)
-    deviation_bin[valid_mask] = 1
-    for quantile in quantiles:
-        deviation_bin += ((full_deviation > quantile.reshape(1, -1)) & valid_mask).astype(np.int8)
+    for j in range(full_deviation.shape[1]):
+        col = full_deviation[:, j]
+        valid = ~np.isnan(col)
+        if valid.sum() == 0:
+            continue
+        quantiles = np.quantile(col[valid], np.linspace(0, 1, n_bins + 1)[1:-1])
+        deviation_bin[valid, j] = np.digitize(col[valid], quantiles, right=True) + 1
 
-    adata_output.obsm["deviation_bin"] = deviation_bin
-    adata_output.X = x_raw
+    adata_output.obsm['deviation_bin'] = deviation_bin
+    adata_output.X = X_raw
+    return adata_output
+
+
+def compute_deviation_bin_rapid_v2(adata_output, n_neighbors=50, n_bins=5, batch_size=2000,
+                                   use_abs=True):  # for virtual perturbation task
+    assert "x" in adata_output.obs.columns and "y" in adata_output.obs.columns, "Spatial coordinates 'x', 'y' not found in .obs"
+    assert "brain_region" in adata_output.obs.columns and "brain_region_main" in adata_output.obs.columns, "Missing region annotations"
+
+    adata_output.obs['slice_brain_area'] = adata_output.obs.apply(
+        lambda x: f"{x['brain_region']}_{x['brain_region_main']}", axis=1
+    )
+
+    adata_output.obsm['deviation_bin'] = np.zeros((adata_output.n_obs, adata_output.n_vars), dtype=np.int8)
+    adata_output.obsm['neighbor_gene_distribution'] = np.zeros((adata_output.n_obs, adata_output.n_vars),
+                                                               dtype=np.float32)
+
+    X_raw = adata_output.X.copy()
+    adata_output.X = sf_normalize(adata_output.X)
+    X = adata_output.X.tocsr() if scipy.sparse.issparse(adata_output.X) else np.asarray(adata_output.X)
+
+    full_deviation = np.full((adata_output.n_obs, adata_output.n_vars), np.nan, dtype=np.float32)
+
+    for idx in adata_output.obs["slice_brain_area"].unique():
+        knn_sample_obs = adata_output.obs.loc[adata_output.obs["slice_brain_area"] == idx]
+        coords = knn_sample_obs[["x", "y"]].values
+        index_array = adata_output.obs.index.get_indexer(knn_sample_obs.index)
+        num_sample = min(len(index_array), n_neighbors)
+
+        nbrs = NearestNeighbors(n_neighbors=num_sample, algorithm='ball_tree', n_jobs=4).fit(coords)
+        _, all_indices = nbrs.kneighbors(coords)
+
+        # batch-wise processing to avoid memory issues
+        for start in range(0, len(index_array), batch_size):
+            end = min(start + batch_size, len(index_array))
+            batch_idx = index_array[start:end]
+            batch_neighbors = all_indices[start:end]
+
+            # get the mean expression of neighbors
+            if scipy.sparse.issparse(X):
+                batch_neighbor_expr = np.stack([
+                    X[ni].mean(axis=0).A1 for ni in batch_neighbors
+                ])
+                batch_cell_expr = X[batch_idx].toarray()
+            else:
+                batch_neighbor_expr = X[batch_neighbors].mean(axis=1)
+                batch_cell_expr = X[batch_idx]
+            if use_abs:
+                deviation = np.abs(batch_cell_expr - batch_neighbor_expr)
+            else:
+                deviation = batch_cell_expr - batch_neighbor_expr
+
+            zero_threshold = 1e-4
+            both_low_mask = (batch_cell_expr < zero_threshold) & (batch_neighbor_expr < zero_threshold)
+
+            deviation[both_low_mask] = np.nan
+
+            full_deviation[batch_idx] = deviation
+            adata_output.obsm['neighbor_gene_distribution'][batch_idx] = batch_neighbor_expr
+            batch_neighbor_expr[np.abs(batch_neighbor_expr) < 1e-6] = 0
+            adata_output.obsm['neighbor_gene_distribution'][batch_idx] = batch_neighbor_expr
+    # calculate quantiles for each gene (0 = no deviation signal)
+    deviation_bin = np.zeros_like(full_deviation, dtype=np.int8)
+    for j in range(full_deviation.shape[1]):
+        col = full_deviation[:, j]
+        valid = ~np.isnan(col)
+        if valid.sum() == 0:
+            continue
+        quantiles = np.quantile(col[valid], np.linspace(0, 1, n_bins + 1)[1:-1])
+        deviation_bin[valid, j] = np.digitize(col[valid], quantiles, right=True) + 1
+
+    adata_output.obsm['deviation_bin'] = deviation_bin
+    adata_output.X = X_raw
     return adata_output
 
 @numba.jit(nopython=True, nogil=True)
@@ -919,14 +815,7 @@ def convert_dtypes_for_parquet(df):
             df[col] = df[col].astype('float64')
     return df
 
-def standardize_adata_obs(
-    adata: ad.AnnData,
-    gene_dict: ad.AnnData,
-    mean_matrix: np.array,
-    specie: str,
-    assay: str,
-    cell_density: bool = True,
-) -> tuple[ad.AnnData, np.ndarray]:
+def standardize_adata_obs(adata: ad.AnnData, gene_dict: ad.AnnData, mean_matrix: np.array, specie: str, assay: str, cell_density: bool = True) -> ad.AnnData:
     """
     Standardize the observation (obs) attributes of an AnnData object and align it with a gene dictionary.
     
@@ -940,69 +829,82 @@ def standardize_adata_obs(
     Returns:
         Standardized AnnData object with aligned genes and normalized observations
     """
+    # Add missing columns with default values
     if 'slice' not in adata.obs.columns:
         adata.obs['slice'] = pd.Series(['unknown'] * adata.shape[0], index=adata.obs.index, name='slice')
     if 'region' not in adata.obs.columns:
         adata.obs['region'] = pd.Series(['unknown'] * adata.shape[0], index=adata.obs.index, name='region')
     if 'brain_region' not in adata.obs.columns:
-        adata.obs['brain_region'] = pd.Series(['unknown'] * adata.shape[0], index=adata.obs.index, name='brain_region')
-
-    normalized_assay = normalize_assay_name(assay)
-    if normalized_assay == "snrna":
+        adata.obs['brain_region'] = pd.Series(['unknown'] * adata.shape[0], index=adata.obs.index, name='brain_region')    
+    
+    # Add spatial coordinates if not present
+        # Add spatial coordinates if not present
+    if assay == "snrna":
         adata.obs["x"] = np.zeros(adata.shape[0])
         adata.obs["y"] = np.zeros(adata.shape[0])
     else:
         if 'x' not in adata.obs.columns:
-            spatial_array = _obsm_to_numpy(adata.obsm["spatial"])
-            adata.obs["x"] = spatial_array[:, 0]
-            adata.obs["y"] = spatial_array[:, 1]
+            if isinstance(adata.obsm["spatial"], pd.DataFrame):
+                adata.obs["x"] = adata.obsm["spatial"].to_numpy()[:, 0]
+                adata.obs["y"] = adata.obsm["spatial"].to_numpy()[:, 1]
+            elif isinstance(adata.obsm["spatial"], np.ndarray):
+                adata.obs["x"] = adata.obsm["spatial"][:, 0]
+                adata.obs["y"] = adata.obsm["spatial"][:, 1]
+            else:
+                raise TypeError(f"Unsupported type for adata.obsm['spatial']: {type(adata.obsm['spatial'])}")
 
+    # Define and filter columns to keep
     keys_to_keep = ['brain_region', 'x', 'y', 'original_index', 'slice', "cell_label", "region"]
     if isinstance(cell_density, bool) and cell_density:
         print("Computing cell density...")
+        import time
         time0 = time.time()
-        platform_name = assay_to_platform_name(assay)
+        # modify the density analysis result save path
+        platform_name = assay.upper()
         adata = convert_spatial_to_um(adata, platform_name)
-        if platform_name not in platform_radius_map:
-            raise KeyError(f"Unsupported assay/platform for density token: {assay}")
-        radius = platform_radius_map[platform_name]
-        adata, _ = compute_density_token(adata, radius_um=radius, n_bins=5)
-        density_map = {i: cell_density_bin_dict[f"cell_density_bin_{i}"] for i in range(5)}
-        adata.obs["density_token"] = adata.obs["density_token"].map(density_map).astype(int)
+        radius = platform_radius_map.get(platform_name, 200)
+        adata, _ = compute_density_token(adata, radius_um=radius, n_bins=5) # radius_um=100
+        adata.obs.replace({'density_token': {i: cell_density_bin_dict[f"cell_density_bin_{i}"] for i in range(5)}}, inplace=True)
         keys_to_keep.append("density_token")
         time1 = time.time()
         print("compute_density_token time: ", (time1 - time0) / 60, "min")
-
     columns_to_delete = [col for col in adata.obs.columns if col not in keys_to_keep]
-    adata.obs = adata.obs.drop(columns=columns_to_delete)
+    adata.obs.drop(columns=columns_to_delete, inplace=True)
+    # Clear unnecessary data
     adata.uns = {}
     adata.obsm = {}
-
+    
+    # Align with gene dictionary and filter invalid coordinates
     adata_output, mean_matrix_aligned = align_adata_and_mean_matrix(adata, gene_dict, mean_matrix)
     adata_output.obs = adata_output.obs.reset_index(drop=True)
-    adata_output.obs['specie'] = specie_dict.get(specie, specie)
-    adata_output.obs['assay'] = technology_dict.get(normalized_assay, normalized_assay)
-
+    
+    adata_output.obs['specie'] = specie
+    adata_output.obs['assay'] = assay
+    
+    # Replace values with dictionary mappings
+    adata_output.obs.replace({'specie': specie_dict}, inplace=True)
+    adata_output.obs.replace({'assay': technology_dict}, inplace=True)
+    
     return adata_output, mean_matrix_aligned
 
-def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, output_path=None, anno=False,
+def tokenization_h5ad(adata_path, gene_dict_path, mean_path, specie=None, assay=None, output_path=None, anno=False,
                       split="train", label=False, cell_density=True, gene_niche=True,
-                      use_hvg=True, n_hvg=2000, min_genes=3, min_cells=3, spatial_imputation=False,
-                      use_dev_abs=True):
+                      use_hvg=False, n_hvg=1000, min_genes=3, min_cells=3, spatial_imputation=False,
+                      use_dev_abs=False):
     """
-    Brainbeacon input tokenization.
-    Convert H5ad directly to batched .job outputs.
+    Brainbeacon input tokenization
+    Conver H5ad to Joblib
     """
     assert gene_dict_path, "Input `gene_dict_path` cannot be empty."
-    normalized_assay = normalize_assay_name(assay)
-    gene_dict, mean_matrix = load_gene_dict_and_mean(gene_dict_path, normalized_assay)
+    gene_dict = sc.read_h5ad(gene_dict_path)
+    mean_matrix = np.load(mean_path)
     print(f"path to process: {adata_path}")
     adata = sc.read_h5ad(adata_path)
-    if normalized_assay == "snrna":
+    if assay == "snrna":
         cell_density = False  # snRNA-seq does not have spatial coordinates
         gene_niche = False
         spatial_imputation = False
-    if normalized_assay == "stereo" and spatial_imputation:
+    if assay == "stereo" and spatial_imputation:
         adata = spatial_expression_imputation(
             adata,
             spatial_key='spatial',
@@ -1015,7 +917,7 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
     if use_hvg:
         tmp = adata.copy()
         sc.pp.normalize_total(tmp, target_sum=1e4)
-        # sc.pp.log1p(tmp)
+        sc.pp.log1p(tmp)
         # sc.pp.highly_variable_genes(tmp, n_top_genes=n_hvg, flavor="seurat")
         sc.pp.highly_variable_genes(tmp, n_top_genes=n_hvg, flavor="seurat_v3")
         # sc.pp.highly_variable_genes(tmp, n_top_genes=n_hvg, flavor="seurat_v3", batch_key="slice")
@@ -1056,7 +958,7 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
             "adata must contain Ensembl IDs in `var.index`. "
             "Please convert gene names to Ensembl IDs before proceeding."
         )
-    adata_output, mean_matrix = standardize_adata_obs(adata, gene_dict, mean_matrix, specie, normalized_assay, cell_density)
+    adata_output, mean_matrix = standardize_adata_obs(adata, gene_dict, mean_matrix, specie, assay, cell_density)
 
     # No brain_region
     if use_dev_abs:
@@ -1067,22 +969,11 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
         adata_output.obs['brain_region_main'] = adata_output.obs["cell_label"] # user can change the cell label to other annotation
 
     if gene_niche:
-        if use_dev_abs:
-            adata_output = compute_deviation_bin_rapid_v2(
-                adata_output,
-                n_neighbors=50,
-                n_bins=5,
-                use_abs=True,
-                store_neighbor_gene_distribution=False,
-                zero_threshold=1e-4,
-            )
-        else:
-            adata_output = compute_deviation_bin_rapid(
-                adata_output,
-                n_neighbors=50,
-                n_bins=5,
-                store_neighbor_gene_distribution=False,
-            )
+        adata_output = (
+            compute_deviation_bin_rapid_v2(adata_output, n_neighbors=50, n_bins=5)
+            if use_dev_abs
+            else compute_deviation_bin_rapid(adata_output, n_neighbors=50, n_bins=5)
+        )
 
     else:
         adata_output.obsm["deviation_bin"] = np.zeros((adata_output.shape[0], adata_output.shape[1]), dtype=np.int8)
@@ -1095,36 +986,18 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
 
     obs_adata_output = obs_adata_output.reset_index().rename(columns={'index': 'idx'})
     obs_adata_output['idx'] = obs_adata_output['idx'].astype('i8')
-    gene_type_col = _gene_type_column(adata_output.var)
-    connect_comp_lookup, rna_type_lookup = _build_global_feature_lookups(
-        adata_output.var,
-        n_aux=config_train["n_aux"],
-        n_tokens=config_train["n_tokens"],
-    )
-    rng = _new_rng()
-
-    if output_path is None:
-        raise ValueError("Output path must be provided.")
-    os.makedirs(output_path, exist_ok=True)
-    for item in os.listdir(output_path):
-        item_path = os.path.join(output_path, item)
-        if item.endswith(".parquet") and os.path.isfile(item_path):
-            os.remove(item_path)
-        elif item.startswith("tokens-") and os.path.isdir(item_path):
-            import shutil
-            shutil.rmtree(item_path)
 
     for batch in tqdm(range(N_BATCHES), desc="Processing data batches"): 
         X_chunk = adata_output.X[batch * chunk_len:chunk_len * (batch + 1)]
         if issparse(X_chunk):
-            X_chunk = X_chunk.toarray()
+            X_chunk = X_chunk.todense()
         obs_tokens = obs_adata_output.iloc[batch * chunk_len:chunk_len * (batch + 1)].copy()
         tokenized, tokenized_connect_comp, tokenized_rna_type, tokenized_deviation_bin, tokenized_exp = tokenize_data(
-            x=np.asarray(X_chunk),
+            x=X_chunk,
             gene_connect_comp=adata_output.var["homo_connect_id"].values,
             gene_id=adata_output.var["gene_id"].values,
-            gene_type_id=adata_output.var[gene_type_col].values,
-            deviation_bin=adata_output.obsm["deviation_bin"][batch * chunk_len:chunk_len * (batch + 1)],
+            gene_type_id=adata_output.var["Gene_type_id"].values,
+            deviation_bin=adata_output.obsm["deviation_bin"],
             mean_matrix=mean_matrix,
             max_seq_len=MAX_LENGTH,
             aux_token_len=AUX_TOKEN,
@@ -1134,28 +1007,24 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
         for col in ['brain_region', 'brain_region_main', 'x', 'y', 'assay', 'specie', 'idx', "original_index", "cell_label", "density_token"]:
             if col in obs_tokens.columns:
                 available_columns.append(col)
-
-        obs_tokens = obs_tokens[available_columns].reset_index(drop=True)
+        
+        obs_tokens = obs_tokens[available_columns]        
+        # concatenate dataframes
+        obs_tokens['X'] = [tokenized[i, :] for i in range(tokenized.shape[0])]
+        obs_tokens['X_connect_comp'] = [tokenized_connect_comp[i, :] for i in
+                                        range(tokenized_connect_comp.shape[0])]
+        obs_tokens['X_rna_type'] = [tokenized_rna_type[i, :] for i in range(tokenized_rna_type.shape[0])]
+        obs_tokens['X_deviation_bin'] = [tokenized_deviation_bin[i, :] for i in range(tokenized_deviation_bin.shape[0])]
+        obs_tokens['X_exp'] = [tokenized_exp[i, :] for i in range(tokenized_exp.shape[0])]
         if anno:
-            permutation = np.random.permutation(obs_tokens.shape[0])
-            obs_tokens = obs_tokens.iloc[permutation].reset_index(drop=True)
-            tokenized = tokenized[permutation]
-            tokenized_connect_comp = tokenized_connect_comp[permutation]
-            tokenized_rna_type = tokenized_rna_type[permutation]
-            tokenized_deviation_bin = tokenized_deviation_bin[permutation]
-            tokenized_exp = tokenized_exp[permutation]
-
-        _write_job_bundle(
-            output_dir=os.path.join(output_path, f"tokens-{batch:04d}"),
-            obs_df=obs_tokens,
-            x=tokenized,
-            x_connect_comp=tokenized_connect_comp,
-            x_rna_type=tokenized_rna_type,
-            x_neighbor_gene_distribution=tokenized_deviation_bin,
-            x_exp=tokenized_exp,
-            connect_comp_lookup=connect_comp_lookup,
-            rna_type_lookup=rna_type_lookup,
-            rng=rng,
+            obs_tokens = obs_tokens.sample(frac=1)
+        obs_tokens = convert_dtypes_for_parquet(obs_tokens)
+        # Convert pandas DataFrame to pyarrow Table
+        table = pa.Table.from_pandas(obs_tokens)
+        
+        pq.write_table(
+            table, os.path.join(output_path, f"tokens-{batch:04d}.parquet"),
+            row_group_size=1024
         )
     return output_path
 
@@ -1178,263 +1047,40 @@ def split_iter(a: list, n: int):
 def batches(data, batch_size=36):
     return list(split_iter(data, batch_size))
 
-def _stack_array_column(values):
-    array = values.to_numpy() if hasattr(values, "to_numpy") else np.asarray(values)
-    if isinstance(array, np.ndarray) and array.ndim == 2 and array.dtype != object:
-        return array
-    return np.vstack(array)
-
-
-def _prepend_prefix_tokens(obs_df, x, x_connect_comp, x_rna_type, x_neighbor_gene_distribution, x_exp):
-    x = x[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
-    x_connect_comp = x_connect_comp[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
-    x_rna_type = x_rna_type[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
-    x_neighbor_gene_distribution = x_neighbor_gene_distribution[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
-    x_exp = x_exp[:, :config_train["single_context_length"]].astype(np.float32, copy=False)
-
-    if obs_df is None:
-        return x, x_connect_comp, x_rna_type, x_neighbor_gene_distribution, x_exp
-
-    if "density_token" in obs_df.columns:
-        density_token = obs_df["density_token"].to_numpy(dtype=np.int32).reshape(-1, 1)
-        zero_int = np.zeros((x.shape[0], 1), dtype=np.int32)
-        zero_float = np.zeros((x.shape[0], 1), dtype=np.float32)
-        x = np.concatenate((density_token, x), axis=1)
-        x_connect_comp = np.concatenate((zero_int, x_connect_comp), axis=1)
-        x_rna_type = np.concatenate((zero_int, x_rna_type), axis=1)
-        x_neighbor_gene_distribution = np.concatenate((zero_int, x_neighbor_gene_distribution), axis=1)
-        x_exp = np.concatenate((zero_float, x_exp), axis=1)
-
-    if config_train["assay"] and "assay" in obs_df.columns:
-        assay = obs_df["assay"].to_numpy(dtype=np.int32).reshape(-1, 1)
-        zero_int = np.zeros((x.shape[0], 1), dtype=np.int32)
-        zero_float = np.zeros((x.shape[0], 1), dtype=np.float32)
-        x = np.concatenate((assay, x), axis=1)
-        x_connect_comp = np.concatenate((zero_int, x_connect_comp), axis=1)
-        x_rna_type = np.concatenate((zero_int, x_rna_type), axis=1)
-        x_neighbor_gene_distribution = np.concatenate((zero_int, x_neighbor_gene_distribution), axis=1)
-        x_exp = np.concatenate((zero_float, x_exp), axis=1)
-
-    if config_train["specie"] and "specie" in obs_df.columns:
-        specie = obs_df["specie"].to_numpy(dtype=np.int32).reshape(-1, 1)
-        zero_int = np.zeros((x.shape[0], 1), dtype=np.int32)
-        zero_float = np.zeros((x.shape[0], 1), dtype=np.float32)
-        x = np.concatenate((specie, x), axis=1)
-        x_connect_comp = np.concatenate((zero_int, x_connect_comp), axis=1)
-        x_rna_type = np.concatenate((zero_int, x_rna_type), axis=1)
-        x_neighbor_gene_distribution = np.concatenate((zero_int, x_neighbor_gene_distribution), axis=1)
-        x_exp = np.concatenate((zero_float, x_exp), axis=1)
-
-    return x, x_connect_comp, x_rna_type, x_neighbor_gene_distribution, x_exp
-
-
-def _build_feature_lookup(real_indices, feature_values, n_aux, n_tokens):
-    max_token = int(real_indices.max()) if real_indices.size else 0
-    lookup_size = max(max_token + 1, n_tokens + n_aux + 1)
-    lookup = np.zeros(lookup_size, dtype=np.int32)
-    valid = (real_indices > n_aux) & (real_indices < lookup_size)
-    if np.any(valid):
-        lookup[real_indices[valid]] = feature_values[valid]
-    return lookup
-
-
-def _build_global_feature_lookups(var_frame, n_aux, n_tokens):
-    gene_type_col = _gene_type_column(var_frame)
-    gene_ids = np.asarray(var_frame["gene_id"], dtype=np.int32) + n_aux
-    connect_comp_ids = np.asarray(var_frame["homo_connect_id"], dtype=np.int32) + 1
-    rna_type_ids = np.asarray(var_frame[gene_type_col], dtype=np.int32) + 1
-    max_gene_token = int(gene_ids.max()) if gene_ids.size else 0
-    lookup_size = max(max_gene_token + 1, n_tokens + n_aux + 1)
-    connect_comp_lookup = np.zeros(lookup_size, dtype=np.int32)
-    rna_type_lookup = np.zeros(lookup_size, dtype=np.int32)
-    if gene_ids.size:
-        connect_comp_lookup[gene_ids] = connect_comp_ids
-        rna_type_lookup[gene_ids] = rna_type_ids
-    return connect_comp_lookup, rna_type_lookup
-
-
-def _new_rng(seed=None):
-    if seed is None:
-        seed = int(np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32))
-    return np.random.default_rng(seed)
-
-
-def _mask_indices_numpy(indices, p, n_tokens, n_aux, rng):
+def do_masking(adata, p, n_tokens):
     padding_token = 1
-    real_indices = indices.astype(np.int32, copy=True)
-    real_indices[real_indices == 0] = padding_token
+    indices = torch.as_tensor(adata.obsm["X"], dtype=torch.long)
+    indices = torch.where(indices == 0, torch.as_tensor(padding_token, dtype=torch.long), indices)
+    adata.obsm["X"] = indices.numpy()
 
-    candidate_mask = real_indices > n_aux
-    keep_mask = np.ones(real_indices.shape, dtype=np.int32)
-    keep_mask[candidate_mask] = (rng.random(np.count_nonzero(candidate_mask)) >= p).astype(np.int32)
+    mask = 1 - torch.bernoulli(torch.ones_like(indices), p)  # mask indices with probability p
+    mask = torch.where(indices > config_train['n_aux'], mask, torch.ones_like(mask))
 
-    masked_indices = real_indices * keep_mask
-    masked_indices[real_indices == padding_token] = padding_token
-    keep_mask[real_indices == padding_token] = padding_token
+    masked_indices = indices * mask  # masked_indices
 
-    replace_with_random = (masked_indices == 0) & (rng.random(masked_indices.shape) < 0.1)
-    if replace_with_random.any():
-        random_tokens = rng.integers(n_aux + 1, n_tokens + n_aux, size=masked_indices.shape, dtype=np.int32)
-        masked_indices[replace_with_random] = random_tokens[replace_with_random]
+    masked_indices = torch.where(indices != padding_token, masked_indices, indices)
+    mask = torch.where(indices == padding_token, torch.as_tensor(padding_token, dtype=torch.long), mask)
+    random_tokens = torch.randint(config_train['n_aux'] + 1, n_tokens + config_train['n_aux'], size=masked_indices.shape, device=masked_indices.device)
+    random_tokens = random_tokens * torch.bernoulli(torch.ones_like(random_tokens) * 0.1).type(torch.int64)
 
-    replace_with_original = (masked_indices == 0) & (rng.random(masked_indices.shape) < 0.1)
-    if replace_with_original.any():
-        masked_indices[replace_with_original] = real_indices[replace_with_original]
+    masked_indices = torch.where(masked_indices == 0, random_tokens,
+                                 masked_indices) 
+    same_tokens = indices.clone()
+    same_tokens = same_tokens * torch.bernoulli(torch.ones_like(same_tokens) * 0.1).type(torch.int64)
 
-    attention_mask = masked_indices == padding_token
-    return real_indices, masked_indices, keep_mask.astype(np.int32), attention_mask.astype(bool), replace_with_random.astype(bool), replace_with_original.astype(bool)
+    masked_indices = torch.where(masked_indices == 0, same_tokens,
+                                 masked_indices) 
+    adata.obsm['masked_indices'] = masked_indices.numpy()
+    adata.obsm['mask'] = mask.numpy()
 
-
-def _apply_synchronized_feature_mask(feature_values, mask, masked_indices, replace_with_random, replace_with_original, feature_lookup):
-    masked_feature_values = feature_values.astype(np.int32, copy=True)
-    masked_positions = mask == 0
-    if not masked_positions.any():
-        return masked_feature_values
-
-    masked_feature_values[masked_positions] = 0
-    if replace_with_random.any():
-        random_gene_tokens = masked_indices[replace_with_random]
-        random_feature_values = np.zeros(random_gene_tokens.shape, dtype=np.int32)
-        valid_random = (random_gene_tokens >= 0) & (random_gene_tokens < feature_lookup.shape[0])
-        random_feature_values[valid_random] = feature_lookup[random_gene_tokens[valid_random]]
-        masked_feature_values[replace_with_random] = random_feature_values
-    if replace_with_original.any():
-        masked_feature_values[replace_with_original] = feature_values[replace_with_original]
-    return masked_feature_values
-
-
-def _dump_batched_array(values, batch_size, path):
-    joblib.numpy_pickle.dump(batches(values, batch_size), path)
-
-
-def _write_job_bundle(
-    output_dir,
-    obs_df,
-    x,
-    x_connect_comp,
-    x_rna_type,
-    x_neighbor_gene_distribution,
-    x_exp,
-    connect_comp_lookup=None,
-    rna_type_lookup=None,
-    rng=None,
-):
-    if rng is None:
-        rng = _new_rng()
-
-    x, x_connect_comp, x_rna_type, x_neighbor_gene_distribution, x_exp = _prepend_prefix_tokens(
-        obs_df,
-        x,
-        x_connect_comp,
-        x_rna_type,
-        x_neighbor_gene_distribution,
-        x_exp,
-    )
-
-    real_indices, masked_indices, mask, attention_mask, replace_with_random, replace_with_original = _mask_indices_numpy(
-        x,
-        p=config_train["masking_p"],
-        n_tokens=config_train["n_tokens"],
-        n_aux=config_train["n_aux"],
-        rng=rng,
-    )
-
-    if connect_comp_lookup is None:
-        connect_comp_lookup = _build_feature_lookup(real_indices, x_connect_comp, config_train["n_aux"], config_train["n_tokens"])
-    if rna_type_lookup is None:
-        rna_type_lookup = _build_feature_lookup(real_indices, x_rna_type, config_train["n_aux"], config_train["n_tokens"])
-
-    masked_connect_comp = _apply_synchronized_feature_mask(
-        x_connect_comp,
-        mask,
-        masked_indices,
-        replace_with_random,
-        replace_with_original,
-        connect_comp_lookup,
-    )
-    masked_rna_type = _apply_synchronized_feature_mask(
-        x_rna_type,
-        mask,
-        masked_indices,
-        replace_with_random,
-        replace_with_original,
-        rna_type_lookup,
-    )
-
-    os.makedirs(output_dir, exist_ok=True)
-    batch_size = config_train["batch_size"]
-    _dump_batched_array(masked_indices.astype(np.int32), batch_size, os.path.join(output_dir, f'masked_indices_{batch_size}.job'))
-    _dump_batched_array(mask.astype(np.int32), batch_size, os.path.join(output_dir, f'mask_{batch_size}.job'))
-    _dump_batched_array(real_indices.astype(np.int32), batch_size, os.path.join(output_dir, f'real_indices_{batch_size}.job'))
-    _dump_batched_array(attention_mask.astype(bool), batch_size, os.path.join(output_dir, f'attention_mask_{batch_size}.job'))
-    _dump_batched_array(masked_connect_comp.astype(np.int32), batch_size, os.path.join(output_dir, f'connect_comp_{batch_size}.job'))
-    _dump_batched_array(masked_rna_type.astype(np.int32), batch_size, os.path.join(output_dir, f'rna_type_{batch_size}.job'))
-
-    if obs_df is not None and "original_index" in obs_df.columns:
-        cell_raw_index = obs_df["original_index"].to_numpy()
-    else:
-        cell_raw_index = np.arange(real_indices.shape[0])
-    _dump_batched_array(cell_raw_index, batch_size, os.path.join(output_dir, f'cell_raw_index_{batch_size}.job'))
-
-    if obs_df is not None and "cell_label" in obs_df.columns:
-        cell_labels = obs_df["cell_label"].to_numpy()
-    else:
-        cell_labels = np.zeros(real_indices.shape[0], dtype=np.int64)
-    _dump_batched_array(cell_labels, batch_size, os.path.join(output_dir, f'cell_labels_{batch_size}.job'))
-    _dump_batched_array(
-        x_neighbor_gene_distribution.astype(np.int32),
-        batch_size,
-        os.path.join(output_dir, f'neighbor_gene_distribution_{batch_size}.job'),
-    )
-    _dump_batched_array(x_exp.astype(np.float32), batch_size, os.path.join(output_dir, f'exp_{batch_size}.job'))
-
-
-def do_masking(adata, p, n_tokens, rng=None):
-    if rng is None:
-        rng = _new_rng()
-
-    x = np.asarray(adata.obsm["X"], dtype=np.int32)
-    real_indices, masked_indices, mask, attention_mask, replace_with_random, replace_with_original = _mask_indices_numpy(
-        x,
-        p=p,
-        n_tokens=n_tokens,
-        n_aux=config_train["n_aux"],
-        rng=rng,
-    )
-    adata.obsm["X"] = real_indices
-    adata.obsm["masked_indices"] = masked_indices
-    adata.obsm["mask"] = mask
-    adata.obsm["attention_mask"] = attention_mask
-
-    if "X_connect_comp" in adata.obsm:
-        connect_comp = np.asarray(adata.obsm["X_connect_comp"], dtype=np.int32)
-        connect_comp_lookup = _build_feature_lookup(real_indices, connect_comp, config_train["n_aux"], n_tokens)
-        adata.obsm["X_connect_comp"] = _apply_synchronized_feature_mask(
-            connect_comp,
-            mask,
-            masked_indices,
-            replace_with_random,
-            replace_with_original,
-            connect_comp_lookup,
-        )
-
-    if "X_rna_type" in adata.obsm:
-        rna_type = np.asarray(adata.obsm["X_rna_type"], dtype=np.int32)
-        rna_type_lookup = _build_feature_lookup(real_indices, rna_type, config_train["n_aux"], n_tokens)
-        adata.obsm["X_rna_type"] = _apply_synchronized_feature_mask(
-            rna_type,
-            mask,
-            masked_indices,
-            replace_with_random,
-            replace_with_original,
-            rna_type_lookup,
-        )
+    attention_mask = (masked_indices == padding_token)
+    adata.obsm['attention_mask'] = attention_mask.type(torch.bool).numpy()
 
     return adata
 
 def process_parquet(input_file, output_path):
     """
-    Reads a token parquet file and writes batched .job outputs.
+    Reads a .parquet file and converts it to AnnData with required keys.
     """
     if os.path.basename(input_file) == "tokens-0000.parquet":
         print(f"Begin processing: {input_file}")
@@ -1470,6 +1116,16 @@ def process_parquet(input_file, output_path):
     if "X" not in table.column_names:
         raise ValueError("No 'X' column in parquet; cannot proceed.")
 
+    X_stack = table["X"].to_numpy()
+    
+    if len(X_stack.shape) == 1:
+        X_stack = np.vstack(X_stack)  
+    
+    adata = ad.AnnData(
+        X=X_stack,
+        obs=obs_df
+    )
+
     data_connect_comp_key = 'X_connect_comp'
     data_rna_type_key = 'X_rna_type'
     data_neighbor_gene_distribution_key = 'X_deviation_bin'
@@ -1482,27 +1138,136 @@ def process_parquet(input_file, output_path):
         raise ValueError(f"No '{data_neighbor_gene_distribution_key}' in parquet.")
     if data_exp_key not in table.column_names:
         raise ValueError(f"No '{data_exp_key}' in parquet.")
-    X = _stack_array_column(table["X"]).astype(np.int32, copy=False)
-    X_connect_comp = _stack_array_column(table[data_connect_comp_key]).astype(np.int32, copy=False)
-    X_rna_type = _stack_array_column(table[data_rna_type_key]).astype(np.int32, copy=False)
-    X_neighbor_gene_distribution = _stack_array_column(table[data_neighbor_gene_distribution_key]).astype(np.int32, copy=False)
-    X_exp = _stack_array_column(table[data_exp_key]).astype(np.float32, copy=False)
+    adata.obsm[data_connect_comp_key] = table[data_connect_comp_key].to_numpy()
+    adata.obsm[data_rna_type_key] = table[data_rna_type_key].to_numpy()
+    adata.obsm[data_neighbor_gene_distribution_key] = table[data_neighbor_gene_distribution_key].to_numpy()
+    adata.obsm[data_exp_key] = table[data_exp_key].to_numpy()
+    data_key = 'X'
+    X = adata.X.copy()
+    X = torch.as_tensor(X, dtype=torch.float32) 
+    
+    if adata.obsm[data_connect_comp_key].dtype == object:
+        adata.obsm[data_connect_comp_key] = np.vstack(adata.obsm[data_connect_comp_key])
+    
+    if adata.obsm[data_rna_type_key].dtype == object:
+        adata.obsm[data_rna_type_key] = np.vstack(adata.obsm[data_rna_type_key])
+    
+    if adata.obsm[data_neighbor_gene_distribution_key].dtype == object:
+        adata.obsm[data_neighbor_gene_distribution_key] = np.vstack(adata.obsm[data_neighbor_gene_distribution_key])
+    if adata.obsm[data_exp_key].dtype == object:
+        adata.obsm[data_exp_key] = np.vstack(adata.obsm[data_exp_key])
+    X_connect_comp = torch.as_tensor(adata.obsm[data_connect_comp_key], dtype=torch.float32)
+    X_rna_type = torch.as_tensor(adata.obsm[data_rna_type_key], dtype=torch.float32)
+    X_neighbor_gene_distribution = torch.as_tensor(adata.obsm[data_neighbor_gene_distribution_key], dtype=torch.float32)
+    X_exp = torch.as_tensor(adata.obsm[data_exp_key], dtype=torch.float32)
+    # truncate single context length
+    X = X[:, :config_train["single_context_length"]]
+    X_connect_comp = X_connect_comp[:, :config_train["single_context_length"]]
+    X_rna_type = X_rna_type[:, :config_train["single_context_length"]]
+    X_neighbor_gene_distribution = X_neighbor_gene_distribution[:, :config_train["single_context_length"]]
+    X_exp = X_exp[:, :config_train["single_context_length"]]
+    # cell density token
+    if 'density_token' in adata.obs.columns:
+        density_token = torch.as_tensor(adata.obs['density_token'], dtype=torch.float32).view(-1, 1)
+        X = torch.cat((density_token, X), dim=1)
+        zero_tensor = torch.zeros_like(density_token)
+        X_connect_comp = torch.cat((zero_tensor, X_connect_comp), dim=1)
+        X_rna_type = torch.cat((zero_tensor, X_rna_type), dim=1)
+        X_neighbor_gene_distribution = torch.cat((zero_tensor, X_neighbor_gene_distribution), dim=1)
+        X_exp = torch.cat((zero_tensor, X_exp), dim=1)
 
+    if config_train["assay"] and 'assay' in adata.obs.columns:
+        assay = torch.as_tensor(adata.obs['assay'], dtype=torch.float32).view(-1, 1)
+        X = torch.cat((assay, X), dim=1)
+        zero_tensor = torch.zeros_like(assay)
+        X_connect_comp = torch.cat((zero_tensor, X_connect_comp), dim=1)
+        X_rna_type = torch.cat((zero_tensor, X_rna_type), dim=1)
+        X_neighbor_gene_distribution = torch.cat((zero_tensor, X_neighbor_gene_distribution), dim=1)
+        X_exp = torch.cat((zero_tensor, X_exp), dim=1)
+
+    if config_train["specie"] and 'specie' in adata.obs.columns:
+        specie = torch.as_tensor(adata.obs['specie'], dtype=torch.float32).view(-1, 1)
+        X = torch.cat((specie, X), dim=1)
+        zero_tensor = torch.zeros_like(specie)
+        X_connect_comp = torch.cat((zero_tensor, X_connect_comp), dim=1)
+        X_rna_type = torch.cat((zero_tensor, X_rna_type), dim=1)   
+        X_neighbor_gene_distribution = torch.cat((zero_tensor, X_neighbor_gene_distribution), dim=1)
+        X_exp = torch.cat((zero_tensor, X_exp), dim=1)
+    # Store back into adata.obsm
+    adata.obsm[data_key] = X.numpy()
+    adata.obsm[data_connect_comp_key] = X_connect_comp.numpy()
+    adata.obsm[data_rna_type_key] = X_rna_type.numpy()
+    adata.obsm[data_neighbor_gene_distribution_key] = X_neighbor_gene_distribution.numpy()
+    adata.obsm[data_exp_key] = X_exp.numpy()
+    # Masking
+    adata = do_masking(adata, config_train["masking_p"], config_train["n_tokens"])
+
+ 
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
     prefix = os.path.basename(input_file).replace(".parquet", "")
-    _write_job_bundle(
-        output_dir=os.path.join(output_path, prefix),
-        obs_df=obs_df,
-        x=X,
-        x_connect_comp=X_connect_comp,
-        x_rna_type=X_rna_type,
-        x_neighbor_gene_distribution=X_neighbor_gene_distribution,
-        x_exp=X_exp,
-        rng=_new_rng(),
-    )
+    if not os.path.exists(os.path.join(output_path, prefix)):
+        os.makedirs(os.path.join(output_path, prefix))
+
+    masked_indices_batches = batches(adata.obsm["masked_indices"], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(masked_indices_batches), os.path.join(
+        output_path, prefix, f'masked_indices_{config_train["batch_size"]}.job'))
+    mask_batches = batches(adata.obsm["mask"], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(mask_batches), os.path.join(
+        output_path, prefix, f'mask_{config_train["batch_size"]}.job'))
+    real_indices_batches = batches(adata.obsm["X"], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(real_indices_batches), os.path.join(
+        output_path, prefix, f'real_indices_{config_train["batch_size"]}.job'))
+    attention_mask_batches = batches(adata.obsm["attention_mask"], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(attention_mask_batches), os.path.join(
+        output_path, prefix, f'attention_mask_{config_train["batch_size"]}.job'))
+    connect_comp_batches = batches(adata.obsm[data_connect_comp_key], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(connect_comp_batches), os.path.join(
+        output_path, prefix, f'connect_comp_{config_train["batch_size"]}.job'))
+    rna_type_batches = batches(adata.obsm[data_rna_type_key], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(rna_type_batches), os.path.join(
+        output_path, prefix, f'rna_type_{config_train["batch_size"]}.job'))
+    cell_raw_index = batches(adata.obs["original_index"].values, config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(cell_raw_index), os.path.join(
+        output_path, prefix, f'cell_raw_index_{config_train["batch_size"]}.job'))    
+    neighbor_gene_distribution_batches = batches(adata.obsm[data_neighbor_gene_distribution_key], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(neighbor_gene_distribution_batches), os.path.join(
+        output_path, prefix, f'neighbor_gene_distribution_{config_train["batch_size"]}.job'))
+    cell_labels_batches = batches(adata.obs['cell_label'].values, config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(cell_labels_batches), os.path.join(
+        output_path, prefix, f'cell_labels_{config_train["batch_size"]}.job'))
+    exp_batches = batches(adata.obsm[data_exp_key], config_train["batch_size"])
+    joblib.numpy_pickle.dump(list(exp_batches), os.path.join(
+        output_path, prefix, f'exp_{config_train["batch_size"]}.job'))
 
 
-def get_gene_mean_path(prior_dir: str, assay: str, use_metacell: bool = False):
-    return None
+def get_gene_mean_path(prior_dir: str, assay: str, use_metacell: bool = False) -> str:
+
+    assay = assay.lower()
+    fname = None
+
+    if assay == "stereo" or assay == "snrna":
+        if use_metacell:
+            fname = "stereo-seq_gene_nonzero_means_metacell.npy"
+        else:
+            fname = "stereo-seq_gene_nonzero_means.npy"
+    else:
+        fname_map = {
+            "merfish": "merfish_gene_nonzero_means.npy",
+            "xenium": "Xenium_gene_nonzero_means.npy",
+            "starmap": "STARmap_gene_nonzero_means.npy",
+            "slideseqv2": "SlideseqV2_gene_nonzero_means.npy",
+        }
+        fname = fname_map.get(assay)
+
+    if fname is None:
+        raise ValueError(f"Unknown assay: {assay}. Please update assay_map.")
+
+    path = os.path.join(prior_dir, fname)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"gene_mean_path not found at: {path}")
+
+    return path
+
+

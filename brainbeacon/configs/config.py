@@ -36,7 +36,8 @@ DEFAULT_PATHS = {
     "BASE_DIR": "/raid/zhangchengming/BrainBeacon-master",
     "PRETRAIN_DIR": "/raid/zhangchengming/BrainBeacon-master/pretrained",
     "PRIOR_DIR": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge",
-    "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/model_h5ad_1211.h5ad",
+    # "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/model_h5ad_1211.h5ad",
+    "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/gene_dict.h5ad",
     "GENE_LOOKUP_DIR": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/gene_lookup",
     "ESM_EMBED_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/esm2_embeddings_d5120.pt",
 }

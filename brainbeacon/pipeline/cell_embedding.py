@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 from typing import Union, List
 
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.utils import tokenization_h5ad, process_parquet, set_seed
+from brainbeacon.utils import tokenization_h5ad, set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 
 
@@ -295,12 +295,27 @@ class CellEmbeddingPipeline:
         exp_files_list = []
         self.data_paths = data_paths
 
+        token_dirs = []
         for prefix in sorted(os.listdir(data_paths)):
-            if prefix.endswith(".parquet"):
+            dir_path = os.path.join(data_paths, prefix)
+            if not os.path.isdir(dir_path):
                 continue
-            file_prefix_list.append(os.path.join(data_paths, prefix))
-            for file in os.listdir(os.path.join(data_paths, prefix)):
-                file_path = os.path.join(data_paths, prefix, file)
+            if not prefix.startswith("tokens-"):
+                continue
+            if not any(name.startswith("real_indices_") and name.endswith(".job") for name in os.listdir(dir_path)):
+                continue
+            token_dirs.append(dir_path)
+
+        if not token_dirs:
+            raise FileNotFoundError(
+                f"No token joblib bundles were found under {data_paths}. "
+                "Expected directories like tokens-0000 containing *.job files."
+            )
+
+        for dir_path in token_dirs:
+            file_prefix_list.append(dir_path)
+            for file in sorted(os.listdir(dir_path)):
+                file_path = os.path.join(dir_path, file)
                 # print(f"Data paths: {file_path}")
                 if 'real_indices_' in file:
                     real_indices_files_list.append(file_path)
@@ -329,15 +344,61 @@ class CellEmbeddingPipeline:
         )
         return dataset
 
-    def infer(self, dataloader, config_train: dict):
+    def infer(
+        self,
+        dataloader,
+        config_train: dict,
+        return_attention: bool = False,
+        attention_layers: Union[str, List[int]] = "last",
+        attention_reduce: str = "mean_head",
+        attention_dtype: str = "float16"
+    ):
         """
         Run inference on new data using the pretrained model_raw.
+
+        Args:
+            dataloader: DataLoader for input data.
+            config_train: Configuration dictionary.
+            return_attention: If True, also return attention weights from all encoder layers.
+            attention_layers: Which layers to collect attention from. Options:
+                - "last": only the last layer (default, most memory efficient)
+                - "all": all layers
+                - [0, 5, -1]: specific layer indices (negative indexing supported)
+            attention_reduce: How to reduce attention weights to save memory. Options:
+                - "none": keep full (batch, nheads, seq, seq) - WARNING: very large!
+                - "mean_head": average over heads -> (batch, seq, seq) (default)
+                - "max_head": max over heads -> (batch, seq, seq)
+            attention_dtype: Data type for stored attention. Options:
+                - "float16": half precision (default, saves 50% memory)
+                - "float32": full precision
+
+        Returns:
+            If return_attention=False: list of (cell_idx, embedding) tuples.
+            If return_attention=True: tuple of (indexed_embeddings, attention_weights_list).
+                attention_weights_list: list of dicts, each containing:
+                    - 'cell_idx': cell indices for this batch
+                    - 'real_indices': gene token indices, shape (batch, seq_len)
+                    - 'attention': list of (layer_idx, weights) tuples
+                      weights shape depends on attention_reduce setting
         """
         # Switch to evaluation mode
         self.model.eval()
         # Load ESM embedding map
         esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location='cpu')
         indexed_embeddings = []
+        attention_weights_list = []
+
+        # Enable attention hooks only for target layers (saves memory)
+        if return_attention:
+            # Pass target_layers directly to enable_attention_hooks
+            # This avoids registering hooks for layers we don't need
+            if attention_layers == "all":
+                hook_target = None  # None means all layers
+            else:
+                hook_target = attention_layers  # "last" or list of indices
+
+            self.model.pretrain_model.enable_attention_hooks(target_layers=hook_target)
+
         with torch.no_grad():
             for real_indices, attention_mask, connect_comp, rna_type, cell_raw_idx, neighbor_gene_distribution, exp in tqdm(dataloader, desc="Processing batches", total=len(dataloader)):
                 real_indices = real_indices[0]
@@ -388,25 +449,113 @@ class CellEmbeddingPipeline:
                 # Collect indexed embeddings
                 indexed_embeddings.extend(zip(cell_raw_idx, output))
 
+                # Collect attention weights if requested
+                if return_attention:
+                    attn_weights = self.model.pretrain_model.get_attention_weights()
+                    processed_attn = []
+                    for layer_idx, w in attn_weights:
+                        # Reduce over heads to save memory
+                        if attention_reduce == "mean_head":
+                            w = w.mean(dim=1)  # (batch, seq, seq)
+                        elif attention_reduce == "max_head":
+                            w = w.max(dim=1).values  # (batch, seq, seq)
+                        # Convert dtype
+                        if attention_dtype == "float16":
+                            w = w.half()
+                        processed_attn.append((layer_idx, w.cpu()))
+                    attention_weights_list.append({
+                        'cell_idx': cell_raw_idx,
+                        'real_indices': real_indices.cpu(),
+                        'attention': processed_attn
+                    })
+                    self.model.pretrain_model.clear_attention_weights()
+
+        # Cleanup attention hooks
+        if return_attention:
+            self.model.pretrain_model.disable_attention_hooks()
+            return indexed_embeddings, attention_weights_list
+
         return indexed_embeddings
 
-    def run(self, data_paths: List[str], config_train: dict):
+    def run(
+        self,
+        data_paths: List[str],
+        config_train: dict,
+        return_attention: bool = False,
+        attention_layers: Union[str, List[int]] = "last",
+        attention_reduce: str = "mean_head",
+        attention_dtype: str = "float16"
+    ):
         """
-        Main method to run the entire training pipeline.
+        Main method to run the entire inference pipeline.
+
+        Args:
+            data_paths: Path to tokenized data directory.
+            config_train: Configuration dictionary.
+            return_attention: If True, also return attention weights.
+            attention_layers: Which layers to collect. Options:
+                - "last": only last layer (default, most efficient)
+                - "all": all layers (WARNING: large memory usage)
+                - [0, -1]: specific layer indices
+            attention_reduce: How to reduce attention. Options:
+                - "mean_head": average over heads (default)
+                - "max_head": max over heads
+                - "none": keep all heads (WARNING: large memory)
+            attention_dtype: "float16" (default) or "float32"
+
+        Returns:
+            If return_attention=False: list of (cell_idx, embedding) tuples.
+            If return_attention=True: tuple of (indexed_embeddings, attention_weights_list).
+
+        Example usage with attention weights:
+        ```python
+        pipeline = CellEmbeddingPipeline(pretrain_ckpt, model_config, device)
+
+        # Without attention (default)
+        embeddings = pipeline.run(data_paths, config_train)
+
+        # With attention (memory-efficient defaults: last layer, mean over heads, float16)
+        embeddings, attention_list = pipeline.run(
+            data_paths, config_train,
+            return_attention=True
+        )
+        # Each attention tensor shape: (batch, seq_len, seq_len) in float16
+        # Memory per sample: 1000*1000*2 bytes = 2MB (vs 1GB with all layers/heads)
+
+        # Get specific layers with full heads (more memory)
+        embeddings, attention_list = pipeline.run(
+            data_paths, config_train,
+            return_attention=True,
+            attention_layers=[0, -1],  # first and last layer
+            attention_reduce="none",   # keep all heads
+            attention_dtype="float32"
+        )
+
+        # Process attention with gene token info
+        for batch_attn in attention_list:
+            cell_indices = batch_attn['cell_idx']
+            gene_tokens = batch_attn['real_indices']  # (batch, seq_len) gene token IDs
+            for layer_idx, weights in batch_attn['attention']:
+                print(f"Layer {layer_idx}: {weights.shape}, genes: {gene_tokens.shape}")
+        ```
         """
         dataset = self.load_dataset(data_paths)
-        # data_loader = DataLoader(dataset, batch_size=config_train["batch_size"], shuffle=False, num_workers=4, prefetch_factor=2)
         data_loader = DataLoader(dataset, batch_size=config_train["batch_size"], shuffle=False, num_workers=0)
 
-        pred = self.infer(data_loader, config_train)
-        return pred
+        return self.infer(
+            data_loader,
+            config_train,
+            return_attention=return_attention,
+            attention_layers=attention_layers,
+            attention_reduce=attention_reduce,
+            attention_dtype=attention_dtype
+        )
 
 
 def run_tokenization(
     adata_path,
     bb_token_dir,
     gene_dict_path,
-    mean_path,
     specie,
     assay,
     use_hvg=True,
@@ -414,57 +563,65 @@ def run_tokenization(
     force_tokenize=True,
     use_dev_abs=False
 ):
+    """
+    Tokenize input AnnData into BrainBeacon joblib bundles.
+    """
     if not os.path.exists(bb_token_dir):
         os.makedirs(bb_token_dir)
-    # Check if both .parquet files and corresponding tokens-* directories exist
-    existing_parquets = [f for f in os.listdir(bb_token_dir) if f.endswith(".parquet")]
-    existing_dirs = [d for d in os.listdir(bb_token_dir) if d.startswith("tokens-") and os.path.isdir(os.path.join(bb_token_dir, d))]
 
-    # If all files exist and not forcing, skip
-    if existing_parquets and len(existing_parquets) == len(existing_dirs) and not force_tokenize:
-        print(
-            f"Tokenized data found ({len(existing_parquets)} .parquet, {len(existing_dirs)} dirs). Skipping tokenization.")
-        parquet_path = bb_token_dir
-    else:
-        if force_tokenize:
-            print("Forcing re-tokenization: clearing existing .parquet files and token folders...")
-            for item in os.listdir(bb_token_dir):
-                item_path = os.path.join(bb_token_dir, item)
-                if item.endswith(".parquet") or (item.startswith("tokens-") and os.path.isdir(item_path)):
-                    if os.path.isdir(item_path):
-                        shutil.rmtree(item_path)
-                    else:
-                        os.remove(item_path)
-        # Run tokenization if no existing Parquet files are found
-        start = time.time()
-        print("No existing tokenized files found. Running tokenization...")
-        parquet_path = tokenization_h5ad(
-            adata_path, gene_dict_path, mean_path,
-            specie=specie, assay=assay,
-            output_path=bb_token_dir,
-            use_hvg=use_hvg, n_hvg=n_hvg,
-            use_dev_abs=use_dev_abs
+    def _list_token_dirs(base_dir):
+        token_dirs = []
+        for item in sorted(os.listdir(base_dir)):
+            item_path = os.path.join(base_dir, item)
+            if not os.path.isdir(item_path):
+                continue
+            if not item.startswith("tokens-"):
+                continue
+            if not any(name.startswith("real_indices_") and name.endswith(".job") for name in os.listdir(item_path)):
+                continue
+            token_dirs.append(item_path)
+        return token_dirs
+
+    existing_token_dirs = _list_token_dirs(bb_token_dir)
+
+    if existing_token_dirs and not force_tokenize:
+        print(f"Tokenized joblib bundles found ({len(existing_token_dirs)} dirs). Skipping tokenization.")
+        return bb_token_dir
+
+    if force_tokenize:
+        print("Forcing re-tokenization: clearing existing token folders...")
+        for item in os.listdir(bb_token_dir):
+            item_path = os.path.join(bb_token_dir, item)
+            if item.startswith("tokens-") and os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+
+    start = time.time()
+    print("No existing tokenized bundles found. Running tokenization...")
+    tokenization_h5ad(
+        adata_path,
+        gene_dict_path,
+        specie=specie,
+        assay=assay,
+        output_path=bb_token_dir,
+        use_hvg=use_hvg,
+        n_hvg=n_hvg,
+        use_dev_abs=use_dev_abs,
+    )
+
+    token_dirs = _list_token_dirs(bb_token_dir)
+    if not token_dirs:
+        raise RuntimeError(
+            f"Tokenization completed, but no token joblib bundles were found under {bb_token_dir}."
         )
-        # Process all Parquet files
-        for path in os.listdir(parquet_path):
-            if path.endswith(".parquet"):
-                parquet_file = os.path.join(parquet_path, path)
-                # print(f"Processing file: {parquet_file}")
 
-                if not os.path.exists(parquet_file):
-                    print(f"Warning: {parquet_file} does not exist. Skipping...")
-                    continue
-
-                process_parquet(parquet_file, bb_token_dir)
-
-        end = time.time()
-        print(f"Preprocessing time: {(end - start)/60:.2f} minutes")
-    return parquet_path
+    end = time.time()
+    print(f"Preprocessing time: {(end - start)/60:.2f} minutes")
+    return bb_token_dir
 
 
 def run_bb_inference(
     adata,
-    parquet_path,
+    token_data_path,
     config_train,
     pretrain_ckpt,
     device,
@@ -475,7 +632,7 @@ def run_bb_inference(
     pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config_train, device=device)
 
     # Generate embeddings
-    pred = pipeline.run(data_paths=parquet_path, config_train=config_train)
+    pred = pipeline.run(data_paths=token_data_path, config_train=config_train)
 
     # Extract index and embeddings from pred
     pred_indices, pred_embeddings = zip(*[(str(idx[0]), emb.numpy()) for idx, emb in pred])
@@ -661,7 +818,6 @@ def run_bbcellformer_pipeline(
     specie: str,
     assay: str,
     gene_dict_path: str,
-    gene_mean_path: str,
     bb_ckpt_path: str,
     cellplm_ckpt_path: str,
     output_dir: str,
@@ -708,8 +864,6 @@ def run_bbcellformer_pipeline(
         Platform / assay name. Will be stored to ``adata.obs["platform"]``.
     gene_dict_path : str
         Path to the BrainBeacon gene dictionary (``.h5ad``).
-    gene_mean_path : str
-        Path to gene mean statistics used by tokenizer.
     bb_ckpt_path : str
         Path to BrainBeacon pretrained checkpoint.
     cellplm_ckpt_path : str
@@ -809,11 +963,10 @@ def run_bbcellformer_pipeline(
 
     # ====== 3. Tokenization ======
     bb_token_dir = os.path.join(output_dir, f"{output_prefix}_bb_token_dir")
-    parquet_path = run_tokenization(
+    token_data_path = run_tokenization(
         adata_path=adata_path,
         bb_token_dir=bb_token_dir,
         gene_dict_path=gene_dict_path,
-        mean_path=gene_mean_path,
         specie=specie,
         assay=assay,
         use_hvg=use_hvg,
@@ -829,7 +982,7 @@ def run_bbcellformer_pipeline(
     else:
         bb_emb = run_bb_inference(
             adata=adata,
-            parquet_path=parquet_path,
+            token_data_path=token_data_path,
             config_train=config_train,
             pretrain_ckpt=bb_ckpt_path,
             device=device,
