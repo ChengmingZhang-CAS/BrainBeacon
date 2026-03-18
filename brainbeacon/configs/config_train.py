@@ -102,7 +102,7 @@ config_train2 = {
     'dim_model': 1536,
     'batch_first': True,
     'n_tokens': 92076,
-    'n_connect_comp': 46502,
+    'n_connect_comp': 46714,
     'n_aux': 20,
     'n_rna_type': 33,
     'batch_size': 16,
@@ -131,33 +131,40 @@ config_train2 = {
 }
 
 train_path = [
-    # MERFISH - Human (250 token files)
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/MERFISH/MERFISH_Human_Developing",
-    # MERFISH - Mouse (16,840 token files total)
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/MERFISH/MERFISH_Mouse_Merfish_Visp",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/MERFISH/MERFISH_Mouse_Yao2023Atlas",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/MERFISH/MERFISH_Mouse_moffitt2018molecular",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/MERFISH/MERFISH_Mouse_zhang2021spatially",
-    # STARmap - Mouse (653 token files total)
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/STARmap/STARmap_Mouse_Shi2023Spatial",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/STARmap/STARmap_Mouse_Wang2018three",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/STARmap/STARmap_Mouse_Zeng2023Integrative",
-    # SlideseqV2 - Mouse (2,196 token files total)
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/SlideseqV2/SlideseqV2_Mouse_Cable2022CSIDE",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/SlideseqV2/SlideseqV2_Mouse_Wang2022OB",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/SlideseqV2/SlideseqV2_Mouse_stickels2020highly",
-    # Xenium - Human (32 token files)
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/Xenium/Xenium_Human_Preview_FFPE",
-    # Xenium - Mouse (960 token files total)
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/Xenium/Xenium_Mouse_Alzheimer_FFPE",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/Xenium/Xenium_Mouse_ExplorerDemo_FF",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/Xenium/Xenium_Mouse_Hemisphere_FF",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib/Xenium/Xenium_Mouse_Replicates_FF",
-    # Skipped empty datasets:
-    # MERFISH_Human_Alzheimers_SEAAD (0 token files)
-    # MERFISH_Mouse_Androvic2023BrainInjury (0 token files)
-    # MERFISH_Mouse_chen2021decoding (0 token files)
-    # SlideseqV2_Human_Biermann2022Dissecting (0 token files)
-    # Xenium_Human_BrainCancer_FFPE (0 token files)
+    # === public_tokenier_joblib_0314 ===
+    # MERFISH - Human (207 job files, 3 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/MERFISH/MERFISH_Human_Developing",
+    # MERFISH - Mouse (14,436 job files, 551 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/MERFISH/MERFISH_Mouse_Merfish_Visp",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/MERFISH/MERFISH_Mouse_Yao2023Atlas",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/MERFISH/MERFISH_Mouse_moffitt2018molecular",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/MERFISH/MERFISH_Mouse_zhang2021spatially",
+    # STARmap - Mouse (585 job files, 38 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/STARmap/STARmap_Mouse_Shi2023Spatial",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/STARmap/STARmap_Mouse_Wang2018three",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/STARmap/STARmap_Mouse_Zeng2023Integrative",
+    # SlideseqV2 - Mouse (1,836 job files, 48 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/SlideseqV2/SlideseqV2_Mouse_Cable2022CSIDE",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/SlideseqV2/SlideseqV2_Mouse_Wang2022OB",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/SlideseqV2/SlideseqV2_Mouse_stickels2020highly",
+    # Xenium - Human (27 job files, 1 sample)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/Xenium/Xenium_Human_Preview_FFPE",
+    # Xenium - Mouse (792 job files, 8 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/Xenium/Xenium_Mouse_Alzheimer_FFPE",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/Xenium/Xenium_Mouse_ExplorerDemo_FF",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/Xenium/Xenium_Mouse_Hemisphere_FF",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/public_tokenier_joblib_0314/Xenium/Xenium_Mouse_Replicates_FF",
+    # === stereoseq_tokenier_joblib_0314 ===
+    # Stereo-seq - Human (2,277 job files, 47 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stereoseq_tokenier_joblib_0314/human/impu",
+    # Stereo-seq - Macaque (83,214 job files, 159 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stereoseq_tokenier_joblib_0314/macaqe1/impu",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stereoseq_tokenier_joblib_0314/macaque3/impu",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stereoseq_tokenier_joblib_0314/macque2/impu",
+    # Stereo-seq - Marmoset (24,228 job files, 150 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stereoseq_tokenier_joblib_0314/marmoset_1/impu",
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stereoseq_tokenier_joblib_0314/marmoset_2/impu",
+    # Stereo-seq - Mouse (7,578 job files, 195 samples)
+    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stereoseq_tokenier_joblib_0314/mouse/impu",
 ]

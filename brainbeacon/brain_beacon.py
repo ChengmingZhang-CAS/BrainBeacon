@@ -7,6 +7,7 @@ import os
 from torch.utils.data import Dataset
 from tqdm import tqdm
 import time
+from contextlib import nullcontext
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -392,12 +393,14 @@ class BrainBeacon(nn.Module):
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, writer, esm_embedding_map, global_step,
-                    logger, logdir, epoch, lr_scheduler=None, max_steps=None):
+                    logger, logdir, epoch, lr_scheduler=None, max_steps=None, accumulation_steps=1):
     model.train()
     total_loss = 0.0
+    accum_loss = 0.0
     scaler = GradScaler()
-    for masked_indices, mask, real_indices, attention_mask, connect_comp, rna_type, neighbor_gene_distribution in \
-            tqdm(dataloader):
+    optimizer.zero_grad()
+    for micro_step, (masked_indices, mask, real_indices, attention_mask, connect_comp, rna_type, neighbor_gene_distribution) in \
+            enumerate(tqdm(dataloader)):
         masked_indices = masked_indices[0]
         mask = mask[0]
         real_indices = real_indices[0]
@@ -414,54 +417,75 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
             neighbor_gene_distribution = masked_indices.to(device), attention_mask.to(device), \
             connect_comp.to(device), rna_type.to(device), esm_embedding.to(device), real_indices.to(device), \
             neighbor_gene_distribution.to(device)
-        with autocast():
-            mlm_predictions = model(
-                masked_indices, connect_comp, rna_type, attention_mask, esm_embedding, neighbor_gene_distribution
-            )
-            # real_indices = torch.where(mask == 1, real_indices, torch.tensor(-100, dtype=torch.long)).type(
-            #     torch.int64)
-            # real_indices = real_indices.to(device)
-            mlm_predictions = mlm_predictions * (1 - attention_mask.unsqueeze(-1).float())
-            mask_pos = mask == 0
-            loss = criterion(mlm_predictions[mask_pos].reshape(-1, mlm_predictions.shape[-1]),
-                             real_indices[mask_pos].reshape(-1))
-            print("loss", loss.item())
 
-        optimizer.zero_grad()
-        scaler.scale(loss).backward()
+        # Skip DDP gradient sync on non-update steps for efficiency
+        is_update_step = (micro_step + 1) % accumulation_steps == 0
+        context = model.no_sync if (not is_update_step and hasattr(model, 'no_sync')) else nullcontext
+        with context():
+            with autocast():
+                mlm_predictions = model(
+                    masked_indices, connect_comp, rna_type, attention_mask, esm_embedding, neighbor_gene_distribution
+                )
+                # real_indices = torch.where(mask == 1, real_indices, torch.tensor(-100, dtype=torch.long)).type(
+                #     torch.int64)
+                # real_indices = real_indices.to(device)
+                mlm_predictions = mlm_predictions * (1 - attention_mask.unsqueeze(-1).float())
+                mask_pos = mask == 0
+                loss = criterion(mlm_predictions[mask_pos].reshape(-1, mlm_predictions.shape[-1]),
+                                 real_indices[mask_pos].reshape(-1))
+            scaler.scale(loss / accumulation_steps).backward()
+
+        accum_loss += loss.item()
+
+        if is_update_step:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+
+            total_loss += accum_loss / accumulation_steps
+            global_step += 1
+            if rank == 0:
+                print(f"loss {accum_loss / accumulation_steps:.4f}")
+
+            accum_loss = 0.0
+
+            # Logging and checkpointing
+            if rank == 0:
+                if global_step % 1000 == 0:
+                    avg_loss = total_loss / 1000
+                    print(f"Step {global_step}, Avg Loss: {avg_loss:.4f}")
+                    if writer:
+                        writer.add_scalar("Loss/Step", avg_loss, global_step)
+                    if logger:
+                        logger.info(f"Step {global_step}, Avg Loss: {avg_loss:.4f}")
+                    total_loss = 0.0
+                if global_step % 10000 == 0:
+                    checkpoint_path = os.path.join(logdir, f"epoch_{epoch}_step_{global_step}.pt")
+                    save_checkpoint(
+                        epoch=None,  # epoch can be None since we're saving by step
+                        model=model.module,
+                        optimizer=optimizer,
+                        path=checkpoint_path,
+                        global_step=global_step
+                    )
+                    print(f"Checkpoint saved at step {global_step} to {checkpoint_path}")
+                    if logger:
+                        logger.info(f"Checkpoint saved at step {global_step} to {checkpoint_path}")
+            if max_steps is not None and global_step >= max_steps:
+                if rank == 0:
+                    if logger:
+                        logger.info(f"Reached max_steps={max_steps} at global_step={global_step}, stopping epoch early.")
+                break
+
+    # Handle remaining accumulated gradients at end of epoch
+    if (micro_step + 1) % accumulation_steps != 0:
         scaler.step(optimizer)
         scaler.update()
-        total_loss += loss.item()
+        optimizer.zero_grad()
+        total_loss += accum_loss / accumulation_steps
         global_step += 1
 
-        # Logging and checkpointing
-        if rank == 0:
-            if global_step % 1000 == 0:
-                avg_loss = total_loss / 1000
-                print(f"Step {global_step}, Avg Loss: {avg_loss:.4f}")
-                if writer:
-                    writer.add_scalar("Loss/Step", avg_loss, global_step)
-                if logger:
-                    logger.info(f"Step {global_step}, Avg Loss: {avg_loss:.4f}")
-                total_loss = 0.0
-            if global_step % 10000 == 0:
-                checkpoint_path = os.path.join(logdir, f"epoch_{epoch}_step_{global_step}.pt")
-                save_checkpoint(
-                    epoch=None,  # epoch can be None since we're saving by step
-                    model=model.module,
-                    optimizer=optimizer,
-                    path=checkpoint_path,
-                    global_step=global_step
-                )
-                print(f"Checkpoint saved at step {global_step} to {checkpoint_path}")
-                if logger:
-                    logger.info(f"Checkpoint saved at step {global_step} to {checkpoint_path}")
-        if max_steps is not None and global_step >= max_steps:
-            if rank == 0:
-                if logger:
-                    logger.info(f"Reached max_steps={max_steps} at global_step={global_step}, stopping epoch early.")
-            break
-    return total_loss / max(len(dataloader), 1), global_step
+    return total_loss / max(len(dataloader) // accumulation_steps, 1), global_step
 
 
 def validate(model, dataloader, criterion, device):

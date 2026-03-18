@@ -112,26 +112,31 @@ def main(device, args, config_train):
     neighbor_gene_distribution_files_list = []
     file_prefix_list = []
     for path in train_path:
-        for prefix in os.listdir(path):
-            if prefix.endswith(".parquet") or prefix.endswith(".pkl"):
+        for sample in os.listdir(path):
+            sample_dir = os.path.join(path, sample)
+            if not os.path.isdir(sample_dir):
                 continue
-            if len(os.listdir(os.path.join(path, prefix))) >= 7:
-                file_prefix_list.append(os.path.join(path, prefix))
-                for file in os.listdir(os.path.join(path, prefix)):
-                    if 'masked_indices_' in file:
-                        masked_indices_files_list.append(os.path.join(path, prefix, file))
-                    elif 'real_indices_' in file:
-                        real_indices_files_list.append(os.path.join(path, prefix, file))
-                    elif 'attention_mask_' in file:
-                        attention_mask_files_list.append(os.path.join(path, prefix, file))
-                    elif 'connect_comp_' in file:
-                        connect_comp_files_list.append(os.path.join(path, prefix, file))
-                    elif 'rna_type_' in file:
-                        rna_type_files_list.append(os.path.join(path, prefix, file))
-                    elif 'mask_' in file:
-                        mask_files_list.append(os.path.join(path, prefix, file))
-                    elif 'neighbor_gene_distribution_' in file:
-                        neighbor_gene_distribution_files_list.append(os.path.join(path, prefix, file))
+            for prefix in os.listdir(sample_dir):
+                prefix_dir = os.path.join(sample_dir, prefix)
+                if not os.path.isdir(prefix_dir):
+                    continue
+                if len(os.listdir(prefix_dir)) >= 7:
+                    file_prefix_list.append(prefix_dir)
+                    for file in os.listdir(prefix_dir):
+                        if 'masked_indices_' in file:
+                            masked_indices_files_list.append(os.path.join(prefix_dir, file))
+                        elif 'real_indices_' in file:
+                            real_indices_files_list.append(os.path.join(prefix_dir, file))
+                        elif 'attention_mask_' in file:
+                            attention_mask_files_list.append(os.path.join(prefix_dir, file))
+                        elif 'connect_comp_' in file:
+                            connect_comp_files_list.append(os.path.join(prefix_dir, file))
+                        elif 'rna_type_' in file:
+                            rna_type_files_list.append(os.path.join(prefix_dir, file))
+                        elif 'mask_' in file:
+                            mask_files_list.append(os.path.join(prefix_dir, file))
+                        elif 'neighbor_gene_distribution_' in file:
+                            neighbor_gene_distribution_files_list.append(os.path.join(prefix_dir, file))
 
     logger.info(f"Loaded {len(masked_indices_files_list)} files for training.")
 
@@ -182,9 +187,9 @@ def main(device, args, config_train):
     lr_scheduler = get_linear_warmup_scheduler(optimizer, num_warmup_steps=warmup_steps)
     for epoch in range(config_train["max_epoch"]):
         logger.info(f"Starting epoch {epoch + 1}")
-        train_loss = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, None, None, esm_embedding_map, global_step, logger,
-            None, epoch
+        train_loss, global_step = train_one_epoch(
+            model, train_loader, optimizer, criterion, device, 0, None, esm_embedding_map, global_step, logger,
+            None, epoch, max_steps=args.max_steps, accumulation_steps=args.accumulation_steps
         )
         print(f"train loss: {train_loss:.4f}")
 
@@ -204,6 +209,9 @@ if __name__ == '__main__':
     parser.add_argument('--use_density_emb', type=int, default=1, help='Use density token embedding (0/1)')
     parser.add_argument('--density_token_idx', type=int, default=2, help='Density token position index')
     parser.add_argument('--max_total_samples', type=int, default=None, help='Maximum total training samples for data ablation')
+    parser.add_argument('--max_steps', type=int, default=None, help='Maximum total training steps (None means no limit)')
+    parser.add_argument('--accumulation_steps', type=int, default=1, help='Gradient accumulation steps (1=no accumulation, >1=mix multiple samples per optimizer update)')
+    parser.add_argument('--exp_name', type=str, default=None, help='Experiment name prefix for logdir (e.g. ABL1)')
     parser.add_argument('--config', type=str, default=None, help='Path to YAML config file (overrides config_train.py)')
     args = parser.parse_args()
     print('Args: {}'.format(args))
