@@ -16,6 +16,26 @@ Default batching mode is ``whole_h5ad``:
 - validation is disabled until a later slice/FOV pipeline is enabled
 """
 
+""""
+conda run --no-capture-output -n brainbeacon_env python Train_script/cellformer_continue_pretrain_h5ad.py \
+  --data-root /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/ABL4 \
+  --output-root /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/stage2_ckpt/ABL_4 \
+  --catalog-cache-path /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/ABL1/meta/catalog.json \
+  --bb-ckpt-path /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/abl_ckpt/ABL1_1773493175/epoch_0_step_60000.pt \
+  --random-init \
+  --pretrain-dir /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/yangyiwen/BrainBeacon_stage2_test/pretrained \
+  --gene-dict-path /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/yangyiwen/BrainBeacon_stage2_test/prior_knowledge/gene_dict.h5ad \
+  --esm-embed-path /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/esm2_embeddings_d5120.pt \
+  --bb-emb-dim 256 \
+  --pe-type fourier \
+  --sampling-mode balanced_slice \
+  --max-cells-per-unit 20000 \
+  --num-global-epochs 200 \
+  --per-dataset-epochs 1 \
+  --seed 42 \
+  --device cuda:0
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -24,11 +44,22 @@ import json
 import math
 import os
 import random
+import re
 import sys
 from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+
+# Make the repo-local `brainbeacon` package importable even when launched via
+# wrappers such as `conda run`, which may not preserve the expected cwd.
+_SCRIPT_PATH = Path(__file__).resolve()
+for _candidate in (_SCRIPT_PATH.parent, _SCRIPT_PATH.parent.parent):
+    if (_candidate / "brainbeacon").is_dir():
+        candidate_text = str(_candidate)
+        if candidate_text not in sys.path:
+            sys.path.insert(0, candidate_text)
+        break
 
 import numpy as np
 import scanpy as sc
@@ -842,6 +873,19 @@ def get_or_create_catalog_payload(
     return payload, "rebuilt"
 
 
+def slugify_group_name(*parts: str) -> str:
+    text = "__".join(str(part).strip().lower() for part in parts)
+    text = re.sub(r"[^a-z0-9._-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_.")
+    return text or "unknown"
+
+
+def append_jsonl(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
 def build_epoch_training_plan(
     *,
     catalog: list[dict],
@@ -1290,6 +1334,8 @@ def main() -> None:
     current_ckpt_path = args.initial_ckpt_path
     latest_ckpt_path = ckpt_dir / "latest.pt"
     history_path = meta_dir / "history.jsonl"
+    group_history_dir = meta_dir / "loss_by_group"
+    group_epoch_summary_dir = meta_dir / "loss_by_group_epoch"
 
     for global_epoch in range(1, args.num_global_epochs + 1):
         print(f"\n========== Global Epoch {global_epoch}/{args.num_global_epochs} ==========")
@@ -1312,6 +1358,7 @@ def main() -> None:
             )
             print(f"Balanced slice-unit plan: {group_text}")
         epoch_checkpoint_meta = None
+        epoch_group_metrics: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
         for dataset_index, plan_item in enumerate(epoch_plan, start=1):
             h5ad_path = Path(plan_item["h5ad_path"])
@@ -1340,6 +1387,10 @@ def main() -> None:
                 f"train units: {adata.obs[args.train_unit_key].nunique()}, "
                 f"platform/specie: {adata.obs['platform'].iloc[0]}/{adata.obs['specie'].iloc[0]}"
             )
+            platform = str(adata.obs["platform"].iloc[0])
+            specie = str(adata.obs["specie"].iloc[0])
+            group_key = (platform, specie)
+            group_slug = slugify_group_name(platform, specie)
 
             overwrite_config = {
                 "name": f"bb_{args.enc_mod}",
@@ -1430,6 +1481,9 @@ def main() -> None:
                 "global_epoch": global_epoch,
                 "dataset_index": dataset_index,
                 "dataset_path": str(h5ad_path),
+                "dataset_name": h5ad_path.stem,
+                "platform": platform,
+                "specie": specie,
                 "latest_checkpoint_path": str(latest_ckpt_path),
                 "n_obs": int(adata.n_obs),
                 "n_vars": int(adata.n_vars),
@@ -1446,8 +1500,9 @@ def main() -> None:
                 "last_valid_loss": last_valid_loss,
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
             }
-            with open(history_path, "a") as handle:
-                handle.write(json.dumps(history_record) + "\n")
+            append_jsonl(history_path, history_record)
+            append_jsonl(group_history_dir / f"{group_slug}.jsonl", history_record)
+            epoch_group_metrics[group_key].append(history_record)
 
             current_ckpt_path = str(latest_ckpt_path)
             print(f"Updated latest checkpoint: {latest_ckpt_path}")
@@ -1475,6 +1530,35 @@ def main() -> None:
                 last_valid_loss=epoch_checkpoint_meta["last_valid_loss"],
             )
             print(f"Saved epoch checkpoint: {epoch_ckpt_path}")
+
+        if epoch_group_metrics:
+            summary_fragments = []
+            for (platform, specie), records in sorted(epoch_group_metrics.items()):
+                train_losses = [float(item["last_train_loss"]) for item in records]
+                valid_losses = [
+                    float(item["last_valid_loss"])
+                    for item in records
+                    if item["last_valid_loss"] is not None
+                ]
+                summary_record = {
+                    "global_epoch": global_epoch,
+                    "platform": platform,
+                    "specie": specie,
+                    "num_datasets": len(records),
+                    "num_cells": int(sum(int(item["n_obs"]) for item in records)),
+                    "num_train_units": int(sum(int(item["n_train_units"]) for item in records)),
+                    "mean_train_loss": float(np.mean(train_losses)),
+                    "mean_valid_loss": float(np.mean(valid_losses)) if valid_losses else None,
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                }
+                group_slug = slugify_group_name(platform, specie)
+                append_jsonl(group_epoch_summary_dir / f"{group_slug}.jsonl", summary_record)
+                summary_text = f"{platform}/{specie}: train={summary_record['mean_train_loss']:.4f}"
+                if summary_record["mean_valid_loss"] is not None:
+                    summary_text += f", valid={summary_record['mean_valid_loss']:.4f}"
+                summary_text += f", datasets={summary_record['num_datasets']}"
+                summary_fragments.append(summary_text)
+            print("Group loss summary: " + " | ".join(summary_fragments))
 
     print(f"\nTraining completed. Latest checkpoint: {latest_ckpt_path}")
 
