@@ -602,7 +602,7 @@ def run_tokenization(
     """
     Tokenize input AnnData into BrainBeacon joblib bundles.
     """
-    from brainbeacon.utils import tokenization_h5ad
+    from brainbeacon.tokenizer import tokenization_h5ad
 
     if not os.path.exists(bb_token_dir):
         os.makedirs(bb_token_dir)
@@ -776,7 +776,7 @@ def run_bbcellformer_recon(
     overwrite_config = {
         "name": f"bb_{enc_mod}",
         "enc_mod": enc_mod,
-        'objective': 'imputation',
+        'objective': 'nb',
         'mask_node_rate': 0.95,
         'mask_feature_rate': 0.25,
         'max_batch_size': 2000,
@@ -977,7 +977,7 @@ def run_bbcellformer_pipeline(
     """
     import scanpy as sc
 
-    from brainbeacon.utils import set_seed
+    from brainbeacon.tokenizer import set_seed
 
     # ====== 1. Setup ======
     os.makedirs(output_dir, exist_ok=True)
@@ -1026,6 +1026,8 @@ def run_bbcellformer_pipeline(
     if os.path.exists(bb_embedding_path) and not force_tokenize:
         print(f"Skipping BB inference. Found existing file: {bb_embedding_path}")
     else:
+        start_time = time.time()
+        print(f"[BB inference] Start...")
         bb_emb = run_bb_inference(
             adata=adata,
             token_data_path=token_data_path,
@@ -1034,7 +1036,9 @@ def run_bbcellformer_pipeline(
             device=device,
             save_path=bb_embedding_path
         )
+        end_time = time.time()
         print(f"BB inference complete. Saved to: {bb_embedding_path}")
+        print(f"[BB inference] Time cost: {(end_time - start_time):.2f} sec")
     # adata.obsm["bb_emb"] = bb_emb
 
     # ====== 5. CellFormer Reconstruction ======

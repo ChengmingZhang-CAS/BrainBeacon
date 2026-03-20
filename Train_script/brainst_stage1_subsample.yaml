@@ -1,0 +1,59 @@
+adata_parent_dirs:
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public
+adata_recursive: true
+adata_glob: "*.h5ad"
+
+# The relative path from this root is mirrored into AfterStage1.
+path_root: /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per
+
+pretrain_ckpt: null
+gene_dict_path: prior_knowledge/gene_dict.h5ad
+token_data_path_template: /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/_bb_token_cache/{relative_dir}/{adata_stem}_bb_token_dir
+output_h5ad_template: /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/AfterStage1/{relative_path}
+obsm_key: bb_emb
+device: cuda:0
+
+use_hvg: true
+n_hvg: 1000
+force_tokenize: false
+use_dev_abs: false
+
+dim_model: 256
+nheads: 4
+dim_feedforward: 256
+nlayers: 4
+dropout: 0.1
+n_tokens: 92076
+n_connect_comp: 46714
+n_aux: 20
+n_rna_type: 33
+num_neighbors: 4
+context_length: 1000
+
+use_esm_embedding: true
+use_esm_emb: true
+ems_embedding_dim: 5120
+esm_embedding_path: /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/esm2_embeddings_d5120.pt
+
+autoregressive: false
+pool: null
+supervised_task: false
+learnable_pe: true
+organ: everything
+specie: true
+assay: true
+modality: false
+contrastive: false
+neighbor_enhance: true
+gene_id: true
+use_pos_emb: true
+use_density_emb: true
+density_token_idx: 2
+
+batch_size: 16
+lr: 1.0e-5
+warmup: 1000
+max_epoch: 100
+total_steps: 100000
+root_path: /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST

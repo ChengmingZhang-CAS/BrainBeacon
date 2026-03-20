@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, adjusted_rand_score
 from typing import List
 
-from brainbeacon.utils import set_seed
+from brainbeacon.tokenizer import set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.cell_type_annotation import CellTypeAnnotationPipeline
 from brainbeacon.pipeline.cell_embedding import run_tokenization, run_bb_inference
