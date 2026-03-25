@@ -13,6 +13,27 @@ import scanpy as sc
 from importlib.resources import files
 from brainbeacon.configs.config import resolve_path
 from brainbeacon.configs.config_train import config_train
+from json import JSONDecodeError
+
+
+def _resolve_model_config_path(pretrain_prefix: str, pretrain_directory: str | None = None) -> str:
+    if pretrain_directory:
+        candidate = os.path.join(pretrain_directory, f"{pretrain_prefix}.config.json")
+        if os.path.exists(candidate):
+            return candidate
+    fallback = files("brainbeacon.configs").joinpath("cellformer.config.json")
+    return str(fallback)
+
+
+def _load_json_like_config(config_path: str) -> dict:
+    with open(config_path, "r") as openfile:
+        raw_text = openfile.read()
+    try:
+        return json.loads(raw_text)
+    except JSONDecodeError:
+        # Some project-local config files use Python-style `None` inside an otherwise JSON-shaped dict.
+        sanitized = raw_text.replace("None", "null")
+        return json.loads(sanitized)
 
 
 def extract_input_embeddings(
@@ -60,8 +81,7 @@ def load_pretrain(
         path_dict: dict | None = None,
 ):
     pretrain_directory = resolve_path("PRETRAIN_DIR", path_dict=path_dict)
-    # config_path = os.path.join(pretrain_directory, f'cellformer.config.json')
-    config_path = files("brainbeacon.configs").joinpath("cellformer.config.json")
+    config_path = _resolve_model_config_path(pretrain_prefix=pretrain_prefix, pretrain_directory=pretrain_directory)
     if cellformer_pretrain_path is not None:
         final_ckpt_path = cellformer_pretrain_path
         print(f"[INFO] Using explicitly provided CellFormer checkpoint: {final_ckpt_path}")
@@ -78,8 +98,7 @@ def load_pretrain(
     if bb_pretrain_path is None:
         print("Using default BrainBeacon pretrain path for cellformer.")
         bb_pretrain_path = os.path.join(pretrain_directory, "epoch_6_hv.pt")
-    with open(config_path, "r") as openfile:
-        config = json.load(openfile)
+    config = _load_json_like_config(config_path)
     config.update(overwrite_config)
 
     """Load gene list from model_raw h5ad file"""
@@ -92,9 +111,11 @@ def load_pretrain(
     print("*"*10, f"gene list size: {len(config['gene_list'])}", "*"*10)
 
     if config['mask_type'] == "hidden":
-        # here just use gene_id embedding
-        bb_model_state = torch.load(bb_pretrain_path, map_location="cpu")
-        config['gene_emb'] = bb_model_state['model_state_dict']['embedding.basic_embedding.weight']
+        # Hidden-mask training consumes bb_emb directly. Keep gene_emb unset here so
+        # the reconstructed CellFormer architecture matches random-init/continued
+        # checkpoints, especially for positional encoding dimensions.
+        bb_model_state = None
+        config['gene_emb'] = None
     else:
         # mask type is "input"
         bb_model_state = None
@@ -126,10 +147,25 @@ def load_pretrain(
 def build_model_from_config(
         pretrain_prefix: str,
         overwrite_config: dict = None,
-        pretrain_directory: str = None):
-    config_path = os.path.join(pretrain_directory, f'{pretrain_prefix}.config.json')
-    with open(config_path, "r") as openfile:
-        config = json.load(openfile)
+        pretrain_directory: str = None,
+        path_dict: dict | None = None,
+        bb_pretrain_path: str | None = None,
+        init_gene_emb_from_bb: bool = False):
+    config_path = _resolve_model_config_path(pretrain_prefix=pretrain_prefix, pretrain_directory=pretrain_directory)
+    config = _load_json_like_config(config_path)
+
+    gene_dict_path = resolve_path("GENE_DICT_PATH", path_dict=path_dict)
+    gene_schema = sc.read_h5ad(gene_dict_path)
+    config["gene_list"] = gene_schema.var.index.tolist()
+    if "head_type" not in config:
+        config["out_dim"] = len(config["gene_list"])
+
+    if init_gene_emb_from_bb:
+        if not bb_pretrain_path:
+            raise ValueError("`bb_pretrain_path` is required when `init_gene_emb_from_bb=True`.")
+        bb_model_state = torch.load(bb_pretrain_path, map_location="cpu")
+        config["gene_emb"] = bb_model_state["model_state_dict"]["embedding.basic_embedding.weight"]
+
     if overwrite_config is not None:
         config.update(overwrite_config)
 
@@ -154,7 +190,13 @@ class Pipeline(ABC):
             self.model = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory, bb_pretrain_path, cellformer_pretrain_path, path_dict=path_dict)
         else:
             # Only build model_raw from configs, without loading weights
-            self.model = build_model_from_config(pretrain_prefix, overwrite_config, pretrain_directory)
+            self.model = build_model_from_config(
+                pretrain_prefix,
+                overwrite_config,
+                pretrain_directory,
+                path_dict=path_dict,
+                bb_pretrain_path=bb_pretrain_path,
+            )
         self.gene_list = None
         self.fitted = False
         self.eval_dict = {}

@@ -8,14 +8,38 @@ from .sparse import simple_mask
 import torch.distributions as td
 import math
 
+def sample_spatial_patch(coord, n_keep):
+    """
+    Sample a spatially contiguous patch by choosing one random center cell
+    and keeping its nearest neighbors.
+    """
+    n_cells = coord.shape[0]
+    if n_cells <= n_keep:
+        return torch.arange(n_cells, device=coord.device)
 
-def drop_nodes(x_dict, drop_node_rate=0., max_batch_size=2000, inplace=True):
+    center_idx = torch.randint(0, n_cells, (1,), device=coord.device).item()
+    center_coord = coord[center_idx:center_idx + 1]
+    dist = torch.sum((coord - center_coord) ** 2, dim=1)
+    cell_idx = torch.topk(dist, k=n_keep, largest=False).indices
+    return cell_idx
+
+
+def drop_nodes(x_dict, drop_node_rate=0., max_batch_size=2000, use_spatial_patch=True, inplace=True):
     if inplace == False:
         raise NotImplementedError('Only support inplace drop nodes')
 
     if drop_node_rate > 0:  # cell_idx is the index of the nodes that are not dropped
-        cell_idx = torch.randperm(x_dict['x_seq'].shape[0], device=x_dict['x_seq'].device)[
-                   :min(max_batch_size, int(x_dict['x_seq'].shape[0] * (1 - drop_node_rate)))]
+        n_keep = min(max_batch_size, int(x_dict['x_seq'].shape[0] * (1 - drop_node_rate)))
+        if use_spatial_patch and 'coord' in x_dict:
+            cell_idx = sample_spatial_patch(x_dict['coord'], n_keep)
+        else:
+            cell_idx = torch.randperm(
+                x_dict['x_seq'].shape[0],
+                device=x_dict['x_seq'].device
+            )[:n_keep]
+        # cell_idx = torch.randperm(x_dict['x_seq'].shape[0], device=x_dict['x_seq'].device)[
+        #            :min(max_batch_size, int(x_dict['x_seq'].shape[0] * (1 - drop_node_rate)))]
+
         x_dict['x_seq'] = x_dict['x_seq'].index_select(0, cell_idx)
         if 'bb_emb' in x_dict:  # new added
             x_dict['bb_emb'] = x_dict['bb_emb'][cell_idx]
@@ -106,13 +130,16 @@ class MaskBuilder(nn.Module):
         return x_dict
 
 class HiddenMaskBuilder(nn.Module):
-    def __init__(self, mask_node_rate, mask_countsure_rate, drop_node_rate=0, max_batch_size=2000, edge_mask=None):
+    def __init__(self, mask_node_rate, mask_countsure_rate, drop_node_rate=0, max_batch_size=2000,
+                 use_spatial_patch=True, center_ratio=0.8, edge_mask=None):
         super().__init__()
         self._mask_node_rate = mask_node_rate
         self._mask_countsure_rate = mask_countsure_rate
         self._edge_mask = edge_mask
         self._drop_node_rate = drop_node_rate
         self._max_batch_size = max_batch_size
+        self._use_spatial_patch = use_spatial_patch
+        self._center_ratio = center_ratio
 
     def update_mask_ratio(self, mask_node_rate, mask_feature_rate):
         self._mask_node_rate = mask_node_rate
@@ -121,7 +148,25 @@ class HiddenMaskBuilder(nn.Module):
     # This function mask parts of the nodes, and only the masked nodes will be used in the loss function
     def apply_mask(self, x_dict):
         if self._drop_node_rate > 0 and self.training:
-            drop_nodes(x_dict, self._drop_node_rate, self._max_batch_size)
+            drop_nodes(x_dict, self._drop_node_rate, self._max_batch_size, self._use_spatial_patch)
+        # Spatial patch mode: center cells are supervised, edge cells are context only
+        if self.training and self._use_spatial_patch:
+            num_nodes = x_dict['h'].shape[0]
+            n_center = max(1, int(num_nodes * self._center_ratio))
+
+            coord = x_dict['coord']
+            patch_center = coord.float().mean(dim=0, keepdim=True)
+            dist = torch.sum((coord.float() - patch_center) ** 2, dim=1)
+
+            center_idx = torch.topk(dist, k=n_center, largest=False).indices
+
+            x_dict['input_mask'] = torch.zeros(
+                x_dict['h'].shape[0],
+                device=x_dict['h'].device
+            ).unsqueeze(-1)
+            x_dict['input_mask'][center_idx] = 1.
+            return x_dict
+
         if self._mask_node_rate > 0 and self.training:
             num_nodes = x_dict['h'].shape[0]
             perm = np.random.permutation(num_nodes)

@@ -106,8 +106,47 @@ def load_config(config_path: str | None, overrides: list[str]) -> dict[str, Any]
     return config
 
 
-def build_path_context(index: int, adata_path: str) -> dict[str, Any]:
-    path = Path(adata_path)
+def _normalize_path_value(value: str | os.PathLike[str]) -> Path:
+    return Path(value).expanduser()
+
+
+def match_context_root(path: str, context_roots: list[str] | None) -> tuple[Path | None, Path | None]:
+    normalized_path = _normalize_path_value(path)
+    if not context_roots:
+        return None, None
+
+    matched_root: Path | None = None
+    matched_relative: Path | None = None
+    for candidate in context_roots:
+        root = _normalize_path_value(candidate)
+        try:
+            relative_path = normalized_path.relative_to(root)
+        except ValueError:
+            continue
+        if matched_root is None or len(root.parts) > len(matched_root.parts):
+            matched_root = root
+            matched_relative = relative_path
+
+    return matched_root, matched_relative
+
+
+def resolve_context_roots(config: dict[str, Any]) -> list[str]:
+    roots: list[str] = []
+    roots.extend(str(item) for item in ensure_list(config.get("path_root")))
+    roots.extend(str(item) for item in ensure_list(config.get("path_roots")))
+
+    if not roots:
+        roots.extend(str(item) for item in ensure_list(config.get("adata_parent_dirs")))
+
+    return dedupe_preserve_order([root for root in roots if root])
+
+
+def build_path_context(index: int, adata_path: str, context_roots: list[str] | None = None) -> dict[str, Any]:
+    path = _normalize_path_value(adata_path)
+    matched_root, matched_relative = match_context_root(str(path), context_roots)
+    relative_path = matched_relative if matched_relative is not None else Path(path.name)
+    relative_dir = relative_path.parent if relative_path.parent != Path(".") else Path("")
+
     return {
         "index": index,
         "adata_path": str(path),
@@ -115,11 +154,16 @@ def build_path_context(index: int, adata_path: str) -> dict[str, Any]:
         "adata_stem": path.stem,
         "adata_suffix": path.suffix,
         "adata_parent": str(path.parent),
+        "matched_root": str(matched_root) if matched_root is not None else "",
+        "matched_root_name": matched_root.name if matched_root is not None else "",
+        "relative_path": str(relative_path),
+        "relative_dir": str(relative_dir),
+        "relative_stem_path": str(relative_path.with_suffix("")),
     }
 
 
 def format_template_path(template: str, context: dict[str, Any]) -> str:
-    return str(template).format(**context)
+    return os.path.normpath(str(template).format(**context))
 
 
 def default_output_h5ad_path(adata_path: str) -> str:
@@ -169,9 +213,13 @@ def resolve_path_outputs(
     template: str | None,
     directory: str | None,
     default_builder,
+    context_roots: list[str] | None = None,
 ) -> list[str | None]:
     count = len(item_paths)
-    contexts = [build_path_context(index=i, adata_path=path) for i, path in enumerate(item_paths)]
+    contexts = [
+        build_path_context(index=i, adata_path=path, context_roots=context_roots)
+        for i, path in enumerate(item_paths)
+    ]
 
     if explicit_list is not None:
         values = [str(item) if item is not None else None for item in explicit_list]
@@ -523,6 +571,7 @@ def main() -> None:
     token_batch_size = int(resolve_single_value(args.token_batch_size, config, ["token_batch_size", "batch_size"], default=16))
 
     adata_paths = discover_adata_paths(args.adata_path, config)
+    context_roots = resolve_context_roots(config)
 
     token_data_paths = resolve_path_outputs(
         item_paths=adata_paths,
@@ -531,6 +580,7 @@ def main() -> None:
         template=config.get("token_data_path_template"),
         directory=config.get("token_data_dir"),
         default_builder=default_token_dir_path,
+        context_roots=context_roots,
     )
     output_h5ad_paths = resolve_path_outputs(
         item_paths=adata_paths,
@@ -539,6 +589,7 @@ def main() -> None:
         template=config.get("output_h5ad_template"),
         directory=config.get("output_h5ad_dir"),
         default_builder=default_output_h5ad_path,
+        context_roots=context_roots,
     )
     ensure_unique_paths(token_data_paths, "token_data_path")
     ensure_unique_paths(output_h5ad_paths, "output_h5ad")
@@ -566,10 +617,13 @@ def main() -> None:
             template=resolve_single_value(None, config, ["npz_save_path_template", "save_path_template"]),
             directory=config.get("npz_save_dir"),
             default_builder=default_npz_save_path,
+            context_roots=context_roots,
         )
         ensure_unique_paths(npz_save_paths, "npz_save_path")
 
     print(f"Resolved {len(adata_paths)} h5ad files.")
+    if context_roots:
+        print(f"Template context roots: {context_roots}")
     print(f"Using device: {device}")
     print("masking_p is fixed to 0 for inference.")
     print(f"Token batch size: {token_batch_size}")
