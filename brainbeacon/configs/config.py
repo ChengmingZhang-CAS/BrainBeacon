@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 specie_dict = {
     'human': 3,
     'mouse': 4,

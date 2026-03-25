@@ -1,14 +1,21 @@
+from __future__ import annotations
+
 import os
+import re
 import time
+import json
+import fcntl
+import hashlib
 import torch
 import joblib
-import shutil
 import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from typing import Union, List
+from collections import OrderedDict
+from contextlib import nullcontext
 
 from brainbeacon.brain_beacon import BrainBeacon
 
@@ -36,8 +43,35 @@ def normalize_brainbeacon_model_config(model_config: dict) -> dict:
     normalized.setdefault("use_pos_emb", True)
     normalized.setdefault("use_density_emb", True)
     normalized.setdefault("density_token_idx", 2)
+    normalized.setdefault("token_batch_size", int(normalized.get("batch_size", 16)))
+    normalized.setdefault("data_loader_batch_size", 1)
+    normalized.setdefault("dataloader_num_workers", 4)
+    normalized.setdefault("pin_memory", True)
+    normalized.setdefault("persistent_workers", True)
+    normalized.setdefault("prefetch_factor", 2)
+    normalized.setdefault("joblib_cache_size", 2)
+    normalized.setdefault("inference_amp", True)
+    normalized.setdefault("amp_dtype", "float16")
 
     return normalized
+
+
+def _resolve_amp_dtype(dtype_name: str) -> torch.dtype:
+    normalized = str(dtype_name).strip().lower()
+    if normalized in {"float16", "fp16", "half"}:
+        return torch.float16
+    if normalized in {"bfloat16", "bf16"}:
+        return torch.bfloat16
+    raise ValueError(f"Unsupported amp_dtype: {dtype_name!r}")
+
+
+def identity_collate(batch):
+    if len(batch) != 1:
+        raise ValueError(
+            "DataLoader batch_size must remain 1 for pre-batched token joblib bundles. "
+            f"Got {len(batch)} samples in one loader batch."
+        )
+    return batch[0]
 
 
 def masked_mean_pooling(transformer_output, mask):
@@ -205,7 +239,8 @@ class ZeroshotJoblibDataset(Dataset):
             file_prefix_list,
             cell_raw_index_files,
             neighbor_gene_distribution_files,
-            exp_files
+            exp_files,
+            cache_size=2,
     ):
         self.real_indices_files = real_indices_files
         self.attention_mask_files = attention_mask_files
@@ -215,6 +250,8 @@ class ZeroshotJoblibDataset(Dataset):
         self.cell_raw_index_files = cell_raw_index_files
         self.neighbor_gene_distribution_files = neighbor_gene_distribution_files
         self.exp_files = exp_files
+        self.cache_size = max(1, int(cache_size))
+        self._bundle_cache = OrderedDict()
         self.file_lengths = [len(joblib.load(f)) for f in self.real_indices_files]
         self.cumulative_lengths = np.cumsum(self.file_lengths)
         self.total_length = self.cumulative_lengths[-1]
@@ -230,26 +267,47 @@ class ZeroshotJoblibDataset(Dataset):
             idx = idx - self.cumulative_lengths[file_idx - 1]
         return file_idx, idx
 
+    def _load_bundle(self, file_idx):
+        cached = self._bundle_cache.get(file_idx)
+        if cached is not None:
+            self._bundle_cache.move_to_end(file_idx)
+            return cached
+
+        bundle = (
+            joblib.load(self.real_indices_files[file_idx]),
+            joblib.load(self.attention_mask_files[file_idx]),
+            joblib.load(self.connect_comp_files[file_idx]),
+            joblib.load(self.rna_type_files[file_idx]),
+            joblib.load(self.cell_raw_index_files[file_idx]),
+            joblib.load(self.neighbor_gene_distribution_files[file_idx]),
+            joblib.load(self.exp_files[file_idx]),
+        )
+        self._bundle_cache[file_idx] = bundle
+        while len(self._bundle_cache) > self.cache_size:
+            self._bundle_cache.popitem(last=False)
+        return bundle
+
     def __getitem__(self, idx):
         """Load a sample based on the global index"""
         file_idx, sample_idx = self._find_file_idx(idx)
-        # Load the specific file (consider caching for better performance)
         try:
-            real_indices_file = self.real_indices_files[file_idx]
-            attention_mask_file = self.attention_mask_files[file_idx]
-            connect_comp_file = self.connect_comp_files[file_idx]
-            rna_type_file = self.rna_type_files[file_idx]
-            cell_raw_index_file = self.cell_raw_index_files[file_idx]
-            neighbor_gene_distribution_file = self.neighbor_gene_distribution_files[file_idx]
-            exp_file = self.exp_files[file_idx]
-            real_indices = joblib.load(real_indices_file)[sample_idx]
-            attention_mask = joblib.load(attention_mask_file)[sample_idx]
-            connect_comp = joblib.load(connect_comp_file)[sample_idx]
-            rna_type = joblib.load(rna_type_file)[sample_idx]
-            neighbor_gene_distribution = joblib.load(neighbor_gene_distribution_file)[sample_idx]
-            exp = joblib.load(exp_file)[sample_idx]
+            (
+                real_indices_bundle,
+                attention_mask_bundle,
+                connect_comp_bundle,
+                rna_type_bundle,
+                cell_raw_index_bundle,
+                neighbor_gene_distribution_bundle,
+                exp_bundle,
+            ) = self._load_bundle(file_idx)
+            real_indices = real_indices_bundle[sample_idx]
+            attention_mask = attention_mask_bundle[sample_idx]
+            connect_comp = connect_comp_bundle[sample_idx]
+            rna_type = rna_type_bundle[sample_idx]
+            neighbor_gene_distribution = neighbor_gene_distribution_bundle[sample_idx]
+            exp = exp_bundle[sample_idx]
             # ensure cell_raw_idx is a list of strings
-            cell_raw_idx = joblib.load(cell_raw_index_file)[sample_idx]
+            cell_raw_idx = cell_raw_index_bundle[sample_idx]
             if isinstance(cell_raw_idx, np.ndarray):
                 cell_raw_idx = cell_raw_idx.tolist() if cell_raw_idx.ndim == 1 else [str(x) for x in cell_raw_idx]
             elif isinstance(cell_raw_idx, (list, tuple)):
@@ -285,9 +343,8 @@ class ZeroshotJoblibDataset(Dataset):
                     empty_tensor,
                     empty_tensor,
                     ["unknown"],
-                    empty_tensor,
-                    empty_tensor,
-                    empty_tensor
+                    empty_tensor.float(),
+                    empty_tensor.float(),
                 )
             else:
                 return self.__getitem__(idx + 1)
@@ -297,11 +354,13 @@ class CellEmbeddingPipeline:
         """
         Initialize the pipeline with model_raw and device settings.
         """
-        self.device = device
+        self.device = torch.device(device)
         self.model_config = normalize_brainbeacon_model_config(model_config)
         self.model = None
+        self.esm_embedding_map = None
         self.pretrain_ckpt: str = pretrain_ckpt
         self.initialize_model()
+        self.initialize_esm_embedding_map()
 
     def initialize_model(self):
         """
@@ -317,7 +376,23 @@ class CellEmbeddingPipeline:
                 print(f"Error loading checkpoint: {e}")
                 raise
 
-    def load_dataset(self, data_paths: List[str]):
+    def initialize_esm_embedding_map(self):
+        if not self.model_config.get("use_esm_emb", True):
+            self.esm_embedding_map = None
+            print("ESM embedding is disabled. Skipping ESM embedding map load.")
+            return
+
+        esm_embedding_path = self.model_config.get("esm_embedding_path")
+        if not esm_embedding_path:
+            raise ValueError("Missing `esm_embedding_path` while `use_esm_emb=True`.")
+
+        esm_map_device = self.device if self.device.type == "cuda" else torch.device("cpu")
+        self.esm_embedding_map = torch.load(esm_embedding_path, map_location=esm_map_device)
+        if self.esm_embedding_map.device != esm_map_device:
+            self.esm_embedding_map = self.esm_embedding_map.to(esm_map_device)
+        print(f"Loaded ESM embedding map to {esm_map_device}: {esm_embedding_path}")
+
+    def load_dataset(self, data_paths: List[str], cache_size: int = 2):
         """
         Load the dataset from the given paths.
         """
@@ -376,7 +451,8 @@ class CellEmbeddingPipeline:
             file_prefix_list,
             cell_raw_index_list,
             neighbor_gene_distribution_files_list,
-            exp_files_list
+            exp_files_list,
+            cache_size=cache_size,
         )
         return dataset
 
@@ -417,12 +493,14 @@ class CellEmbeddingPipeline:
                     - 'attention': list of (layer_idx, weights) tuples
                       weights shape depends on attention_reduce setting
         """
-        # Switch to evaluation mode
         self.model.eval()
-        # Load ESM embedding map
-        esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location='cpu')
         indexed_embeddings = []
         attention_weights_list = []
+        use_esm = self.esm_embedding_map is not None and self.model.pretrain_model.use_esm_emb
+        pin_memory = bool(config_train.get("pin_memory", True))
+        non_blocking = pin_memory and torch.device(self.device).type == "cuda"
+        amp_enabled = bool(config_train.get("inference_amp", True)) and torch.device(self.device).type == "cuda"
+        amp_dtype = _resolve_amp_dtype(config_train.get("amp_dtype", "float16"))
 
         # Enable attention hooks only for target layers (saves memory)
         if return_attention:
@@ -437,39 +515,50 @@ class CellEmbeddingPipeline:
 
         with torch.no_grad():
             for real_indices, attention_mask, connect_comp, rna_type, cell_raw_idx, neighbor_gene_distribution, exp in tqdm(dataloader, desc="Processing batches", total=len(dataloader)):
-                real_indices = real_indices[0]
-                attention_mask = attention_mask[0]
-                connect_comp = connect_comp[0]
-                rna_type = rna_type[0]
-                real_indices_view = real_indices.view(-1).long()
-                neighbor_gene_distribution = neighbor_gene_distribution[0].long()
-                exp = exp[0].float()
+                real_indices = real_indices.to(self.device, non_blocking=non_blocking)
+                attention_mask = attention_mask.to(self.device, non_blocking=non_blocking)
+                connect_comp = connect_comp.to(self.device, non_blocking=non_blocking)
+                rna_type = rna_type.to(self.device, non_blocking=non_blocking)
+                neighbor_gene_distribution = neighbor_gene_distribution.long().to(self.device, non_blocking=non_blocking)
+                exp = exp.float().to(self.device, non_blocking=non_blocking)
 
-                esm_embedding = torch.index_select(esm_embedding_map, dim=0, index=real_indices_view)               
-                esm_embedding = esm_embedding.view(real_indices.shape[0], real_indices.shape[1], esm_embedding.shape[-1])
-                sequence_mask = torch.where(real_indices == 1, torch.zeros_like(real_indices), torch.ones_like(real_indices))
-                real_indices, attention_mask, connect_comp, rna_type, esm_embedding, neighbor_gene_distribution = (
-                    real_indices.to(self.device), attention_mask.to(self.device), connect_comp.to(self.device),
-                    rna_type.to(self.device), esm_embedding.to(self.device), neighbor_gene_distribution.to(self.device)
+                if use_esm:
+                    real_indices_view = real_indices.view(-1).long()
+                    esm_embedding = torch.index_select(self.esm_embedding_map, dim=0, index=real_indices_view)
+                    esm_embedding = esm_embedding.view(real_indices.shape[0], real_indices.shape[1], esm_embedding.shape[-1])
+                else:
+                    esm_embedding = None
+
+                sequence_mask = (real_indices != 1).float()
+                autocast_context = (
+                    torch.autocast(device_type=torch.device(self.device).type, dtype=amp_dtype)
+                    if amp_enabled else nullcontext()
                 )
-                output = self.model(real_indices, connect_comp, rna_type, attention_mask, esm_embedding, neighbor_gene_distribution, sequence_mask)
-                output = output.detach().cpu()
-                # output = masked_mean_pooling(output[:, pool_skip_tokens:, :], sequence_mask[:, pool_skip_tokens:])
+                with autocast_context:
+                    output = self.model(
+                        real_indices,
+                        connect_comp,
+                        rna_type,
+                        attention_mask,
+                        esm_embedding,
+                        neighbor_gene_distribution,
+                        sequence_mask,
+                    )
+                output = output.float()
                 pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
                 weight_mode = config_train.get("weight_mode", "expression")
 
                 if weight_mode == "expression":
                     cd_weight = config_train.get("cd_weight", 0.02)
                     expr_mode = config_train.get("expr_mode", None)
-                    aux = torch.zeros((exp.shape[0], 2), device=exp.device)  # species + platform
-                    cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device)  # cell_density
+                    aux = torch.zeros((exp.shape[0], 2), device=exp.device, dtype=exp.dtype)
+                    cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device, dtype=exp.dtype)
                     gene_expr = exp[:, 3:]  # actual gene tokens
                     if expr_mode == "log1pnorm":
-                        # gene_expr = torch.log1p(gene_expr)
                         gene_expr = torch.log1p(gene_expr) / torch.log(torch.tensor(2.0, device=gene_expr.device))
                     gene_expr = gene_expr / gene_expr.sum(dim=1, keepdim=True).clamp(min=1e-6)
-                    exp = torch.cat([aux, cd, gene_expr], dim=1)  # shape (B, L)
-                    expr_weights = exp[:, pool_skip_tokens:]
+                    exp_features = torch.cat([aux, cd, gene_expr], dim=1)
+                    expr_weights = exp_features[:, pool_skip_tokens:]
                 else:
                     expr_weights = None
                 output = masked_weighted_pooling(
@@ -480,6 +569,7 @@ class CellEmbeddingPipeline:
                     weight_decay=config_train.get("weight_decay", 0.998),
                     temperature=config_train.get("temperature", 300)
                 )
+                output = output.detach().cpu()
 
                 assert len(cell_raw_idx) == output.shape[0], "Batch size mismatch"
                 # Collect indexed embeddings
@@ -575,8 +665,29 @@ class CellEmbeddingPipeline:
                 print(f"Layer {layer_idx}: {weights.shape}, genes: {gene_tokens.shape}")
         ```
         """
-        dataset = self.load_dataset(data_paths)
-        data_loader = DataLoader(dataset, batch_size=config_train["batch_size"], shuffle=False, num_workers=0)
+        cache_size = int(config_train.get("joblib_cache_size", 2))
+        dataset = self.load_dataset(data_paths, cache_size=cache_size)
+        data_loader_batch_size = int(config_train.get("data_loader_batch_size", 1))
+        if data_loader_batch_size != 1:
+            raise ValueError(
+                "data_loader_batch_size must remain 1 for pre-batched token joblib bundles. "
+                f"Got {data_loader_batch_size}."
+            )
+
+        num_workers = max(0, int(config_train.get("dataloader_num_workers", 4)))
+        pin_memory = bool(config_train.get("pin_memory", True))
+        loader_kwargs = {
+            "dataset": dataset,
+            "batch_size": data_loader_batch_size,
+            "shuffle": False,
+            "num_workers": num_workers,
+            "collate_fn": identity_collate,
+            "pin_memory": pin_memory,
+        }
+        if num_workers > 0:
+            loader_kwargs["persistent_workers"] = bool(config_train.get("persistent_workers", True))
+            loader_kwargs["prefetch_factor"] = max(2, int(config_train.get("prefetch_factor", 2)))
+        data_loader = DataLoader(**loader_kwargs)
 
         return self.infer(
             data_loader,
@@ -597,17 +708,25 @@ def run_tokenization(
     use_hvg=True,
     n_hvg=1000,
     force_tokenize=True,
-    use_dev_abs=False
+    use_dev_abs=False,
+    min_genes=0,
+    min_cells=3,
+    token_batch_size=None,
 ):
     """
     Tokenize input AnnData into BrainBeacon joblib bundles.
     """
-    from brainbeacon.utils import tokenization_h5ad
+    import brainbeacon.utils as bb_utils
 
     if not os.path.exists(bb_token_dir):
         os.makedirs(bb_token_dir)
 
+    lock_path = os.path.join(bb_token_dir, ".tokenization.lock")
+    index_path = os.path.join(bb_token_dir, "cache_index.json")
+
     def _list_token_dirs(base_dir):
+        if not os.path.isdir(base_dir):
+            return []
         token_dirs = []
         for item in sorted(os.listdir(base_dir)):
             item_path = os.path.join(base_dir, item)
@@ -615,46 +734,174 @@ def run_tokenization(
                 continue
             if not item.startswith("tokens-"):
                 continue
-            if not any(name.startswith("real_indices_") and name.endswith(".job") for name in os.listdir(item_path)):
+            try:
+                item_names = os.listdir(item_path)
+            except FileNotFoundError:
+                continue
+            if not any(name.startswith("real_indices_") and name.endswith(".job") for name in item_names):
                 continue
             token_dirs.append(item_path)
         return token_dirs
 
-    existing_token_dirs = _list_token_dirs(bb_token_dir)
+    def _extract_batch_sizes(token_dirs):
+        batch_sizes = set()
+        for token_dir in token_dirs:
+            try:
+                token_dir_items = os.listdir(token_dir)
+            except FileNotFoundError:
+                continue
+            for file_name in token_dir_items:
+                match = re.fullmatch(r"real_indices_(\d+)\.job", file_name)
+                if match:
+                    batch_sizes.add(int(match.group(1)))
+        return batch_sizes
 
-    if existing_token_dirs and not force_tokenize:
-        print(f"Tokenized joblib bundles found ({len(existing_token_dirs)} dirs). Skipping tokenization.")
-        return bb_token_dir
+    def _metadata_path(cache_dir):
+        return os.path.join(cache_dir, "tokenization_meta.json")
 
-    if force_tokenize:
-        print("Forcing re-tokenization: clearing existing token folders...")
-        for item in os.listdir(bb_token_dir):
-            item_path = os.path.join(bb_token_dir, item)
-            if item.startswith("tokens-") and os.path.isdir(item_path):
-                shutil.rmtree(item_path)
+    def _complete_path(cache_dir):
+        return os.path.join(cache_dir, ".complete")
 
-    start = time.time()
-    print("No existing tokenized bundles found. Running tokenization...")
-    tokenization_h5ad(
-        adata_path,
-        gene_dict_path,
-        specie=specie,
-        assay=assay,
-        output_path=bb_token_dir,
-        use_hvg=use_hvg,
-        n_hvg=n_hvg,
-        use_dev_abs=use_dev_abs,
-    )
+    def _load_metadata(cache_dir):
+        metadata_path = _metadata_path(cache_dir)
+        if not os.path.exists(metadata_path):
+            return None
+        with open(metadata_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
 
-    token_dirs = _list_token_dirs(bb_token_dir)
-    if not token_dirs:
-        raise RuntimeError(
-            f"Tokenization completed, but no token joblib bundles were found under {bb_token_dir}."
-        )
+    def _write_metadata(cache_dir, metadata):
+        metadata_path = _metadata_path(cache_dir)
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2, sort_keys=True)
 
-    end = time.time()
-    print(f"Preprocessing time: {(end - start)/60:.2f} minutes")
-    return bb_token_dir
+    def _load_index():
+        if not os.path.exists(index_path):
+            return {}
+        with open(index_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+
+    def _write_index(index_data):
+        with open(index_path, "w", encoding="utf-8") as handle:
+            json.dump(index_data, handle, indent=2, sort_keys=True)
+
+    def _cache_is_ready(cache_dir, expected_metadata):
+        if not os.path.isdir(cache_dir):
+            return False
+        if not os.path.exists(_complete_path(cache_dir)):
+            return False
+        cache_metadata = _load_metadata(cache_dir)
+        if cache_metadata != expected_metadata:
+            return False
+        token_dirs = _list_token_dirs(cache_dir)
+        if not token_dirs:
+            return False
+        batch_sizes = _extract_batch_sizes(token_dirs)
+        return batch_sizes == {expected_metadata["token_batch_size"]}
+
+    def _build_versioned_cache_name(base_name):
+        return f"{base_name}__{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{time.time_ns()}"
+
+    requested_batch_size = int(token_batch_size or bb_utils.config_train["batch_size"])
+    requested_metadata = {
+        "specie": str(specie),
+        "assay": str(assay),
+        "use_hvg": bool(use_hvg),
+        "n_hvg": int(n_hvg),
+        "use_dev_abs": bool(use_dev_abs),
+        "min_genes": int(min_genes),
+        "min_cells": int(min_cells),
+        "token_batch_size": requested_batch_size,
+    }
+    metadata_json = json.dumps(requested_metadata, sort_keys=True, separators=(",", ":"))
+    cache_hash = hashlib.sha1(metadata_json.encode("utf-8")).hexdigest()[:12]
+    canonical_cache_name = f"cache_{cache_hash}"
+
+    with open(lock_path, "w", encoding="utf-8") as lock_handle:
+        print(f"Waiting for tokenization lock: {lock_path}")
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            index_data = _load_index()
+            cache_name = index_data.get(cache_hash, canonical_cache_name)
+            cache_dir = os.path.join(bb_token_dir, cache_name)
+
+            if not force_tokenize and _cache_is_ready(cache_dir, requested_metadata):
+                token_dir_count = len(_list_token_dirs(cache_dir))
+                print(
+                    f"Tokenized joblib bundles found ({token_dir_count} dirs, batch_size={requested_batch_size}) "
+                    f"at {cache_dir}. Skipping tokenization."
+                )
+                return cache_dir
+
+            if not force_tokenize and cache_name != canonical_cache_name:
+                canonical_cache_dir = os.path.join(bb_token_dir, canonical_cache_name)
+                if _cache_is_ready(canonical_cache_dir, requested_metadata):
+                    index_data[cache_hash] = canonical_cache_name
+                    _write_index(index_data)
+                    token_dir_count = len(_list_token_dirs(canonical_cache_dir))
+                    print(
+                        f"Tokenized joblib bundles found ({token_dir_count} dirs, batch_size={requested_batch_size}) "
+                        f"at {canonical_cache_dir}. Skipping tokenization."
+                    )
+                    return canonical_cache_dir
+
+            if force_tokenize or os.path.exists(os.path.join(bb_token_dir, canonical_cache_name)):
+                target_cache_name = _build_versioned_cache_name(canonical_cache_name)
+            else:
+                target_cache_name = canonical_cache_name
+            target_cache_dir = os.path.join(bb_token_dir, target_cache_name)
+            staging_cache_dir = os.path.join(bb_token_dir, f".tmp_{target_cache_name}_{os.getpid()}")
+
+            start = time.time()
+            print(
+                "Running tokenization into "
+                f"{target_cache_dir} with token_batch_size={requested_batch_size}, "
+                f"min_genes={int(min_genes)}, min_cells={int(min_cells)}..."
+            )
+            original_batch_size = int(bb_utils.config_train["batch_size"])
+            bb_utils.config_train["batch_size"] = requested_batch_size
+            try:
+                bb_utils.tokenization_h5ad(
+                    adata_path,
+                    gene_dict_path,
+                    specie=specie,
+                    assay=assay,
+                    output_path=staging_cache_dir,
+                    use_hvg=use_hvg,
+                    n_hvg=n_hvg,
+                    use_dev_abs=use_dev_abs,
+                    min_genes=int(min_genes),
+                    min_cells=int(min_cells),
+                )
+            finally:
+                bb_utils.config_train["batch_size"] = original_batch_size
+
+            token_dirs = _list_token_dirs(staging_cache_dir)
+            if not token_dirs:
+                raise RuntimeError(
+                    f"Tokenization completed, but no token joblib bundles were found under {staging_cache_dir}."
+                )
+
+            _write_metadata(staging_cache_dir, requested_metadata)
+            with open(_complete_path(staging_cache_dir), "w", encoding="utf-8") as handle:
+                handle.write("complete\n")
+            if os.path.exists(target_cache_dir):
+                original_target_cache_dir = target_cache_dir
+                target_cache_name = _build_versioned_cache_name(canonical_cache_name)
+                target_cache_dir = os.path.join(bb_token_dir, target_cache_name)
+                print(
+                    f"Target cache directory already exists ({original_target_cache_dir}). "
+                    f"Publishing to a new versioned directory instead: {target_cache_dir}"
+                )
+            os.replace(staging_cache_dir, target_cache_dir)
+            index_data[cache_hash] = target_cache_name
+            _write_index(index_data)
+
+            end = time.time()
+            print(f"Preprocessing time: {(end - start)/60:.2f} minutes")
+            return target_cache_dir
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def run_bb_inference(
@@ -663,18 +910,33 @@ def run_bb_inference(
     config_train,
     pretrain_ckpt,
     device,
-    save_path=None
+    save_path=None,
+    pipeline: CellEmbeddingPipeline | None = None,
 ):
     time0 = time.time()
     config_train = normalize_brainbeacon_model_config(config_train)
-    config_train["batch_size"] = 1  # Use batch size of 1 for inference
-    pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config_train, device=device)
+    owns_pipeline = pipeline is None
+    if pipeline is None:
+        pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config_train, device=device)
 
     # Generate embeddings
     pred = pipeline.run(data_paths=token_data_path, config_train=config_train)
 
     # Extract index and embeddings from pred
-    pred_indices, pred_embeddings = zip(*[(str(idx[0]), emb.numpy()) for idx, emb in pred])
+    def _normalize_pred_index(idx):
+        if isinstance(idx, np.ndarray):
+            if idx.ndim == 0:
+                return str(idx.item())
+            if idx.size != 1:
+                raise ValueError(f"Expected a single cell index, but got array with shape {idx.shape}.")
+            return str(idx.reshape(-1)[0])
+        if isinstance(idx, (list, tuple)):
+            if len(idx) != 1:
+                raise ValueError(f"Expected a single cell index, but got {len(idx)} values: {idx!r}")
+            return str(idx[0])
+        return str(idx)
+
+    pred_indices, pred_embeddings = zip(*[(_normalize_pred_index(idx), emb.numpy()) for idx, emb in pred])
     pred_indices = np.array(pred_indices)
     pred_embeddings = np.array(pred_embeddings)
 
@@ -690,6 +952,8 @@ def run_bb_inference(
             raise ValueError(
                 "Embedding order check failed: the number of predicted embeddings does not match "
                 f"adata.obs_names ({len(pred_indices)} vs {len(obs_names)}). "
+                "This usually means tokenization filtered out cells before inference. "
+                "For inference, use min_genes=0 and regenerate the token cache. "
                 "Aborting without saving."
             )
 
@@ -709,8 +973,10 @@ def run_bb_inference(
     time1 = time.time()
     print("Time cost: ", (time1 - time0) / 60)
 
-    del pipeline, pred, pred_indices, pred_embeddings
-    torch.cuda.empty_cache()
+    del pred, pred_indices, pred_embeddings
+    if owns_pipeline:
+        del pipeline
+        torch.cuda.empty_cache()
     return ordered_embeddings
 
 

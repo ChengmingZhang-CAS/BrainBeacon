@@ -116,6 +116,23 @@ config_train2 = {
     'gene_id': True
 }
 
+# Sampling probabilities for hierarchical sampler (platform_id -> prob, species_id -> prob)
+# Platform IDs: 7=MERFISH, 8=Xenium, 9=STARmap, 10=SlideSeqV2, 11=Stereo-seq
+platform_prob = {
+    11: 0.8268,
+    7: 0.1327,
+    9: 0.0130,
+    10: 0.0188,
+    8: 0.0085
+}
+
+species_prob = {
+    6: 0.2000,
+    4: 0.2610,
+    5: 0.5015,
+    3: 0.0375
+}
+
 train_path = [
     "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/MERFISH_human_parquet",
     "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/MERFISH_mouse_parquet",
@@ -123,20 +140,20 @@ train_path = [
     "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/SlideseqV2_mouse_parquet",
     "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/Xenium_human_parquet",
     "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/Xenium_mouse_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/human_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_1_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_2_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_3_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_4_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque2_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque3_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_1_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_2_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_3_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_4_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_sagittal_1_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/mouse1_parquet",
-    "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/mouse2_parquet"
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/human_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_1_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_2_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_3_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque1_4_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque2_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/macaque3_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_1_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_2_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_3_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_cortex_4_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/marmoset_sagittal_1_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/mouse1_parquet",
+    # "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/pretrainJOb_add_cdandniche0415/mouse2_parquet"
 ]
 
 

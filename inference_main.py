@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -419,8 +420,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tokenize-assay", type=str, default=None, help="Global assay override used for tokenization.")
     parser.add_argument("--use-hvg", type=str, default=None, help="Whether tokenization uses HVG selection.")
     parser.add_argument("--n-hvg", type=int, default=None, help="Number of HVGs for tokenization.")
+    parser.add_argument("--min-genes", type=int, default=None, help="Minimum genes per cell during tokenization.")
+    parser.add_argument("--min-cells", type=int, default=None, help="Minimum cells per gene during tokenization.")
     parser.add_argument("--force-tokenize", type=str, default=None, help="Whether to force regeneration of token files.")
     parser.add_argument("--use-dev-abs", type=str, default=None, help="Pass through to run_tokenization.")
+    parser.add_argument("--token-batch-size", type=int, default=None, help="Effective token batch size written into token joblib bundles.")
+    parser.add_argument("--dataloader-num-workers", type=int, default=None, help="Number of DataLoader workers for inference.")
+    parser.add_argument("--joblib-cache-size", type=int, default=None, help="How many token joblib bundles to cache per worker.")
+    parser.add_argument("--prefetch-factor", type=int, default=None, help="DataLoader prefetch_factor when num_workers > 0.")
+    parser.add_argument("--pin-memory", type=str, default=None, help="Whether to enable DataLoader pin_memory.")
+    parser.add_argument("--inference-amp", type=str, default=None, help="Whether to enable AMP during inference.")
+    parser.add_argument("--amp-dtype", type=str, default=None, help="AMP dtype, for example float16 or bfloat16.")
     parser.add_argument("--neighbor-enhance", type=str, default=None, help="Override BrainBeacon neighbor_enhance.")
     parser.add_argument("--use-gene-id-emb", type=str, default=None, help="Override BrainBeacon use_gene_id_emb.")
     parser.add_argument("--use-homo-emb", type=str, default=None, help="Override BrainBeacon use_homo_emb.")
@@ -448,6 +458,7 @@ def main() -> None:
     from anndata import read_h5ad
 
     from brainbeacon.pipeline.cell_embedding import (
+        CellEmbeddingPipeline,
         normalize_brainbeacon_model_config,
         run_bb_inference,
         run_tokenization,
@@ -459,6 +470,15 @@ def main() -> None:
         "pretrain_ckpt": args.pretrain_ckpt,
         "gene_dict_path": args.gene_dict_path,
         "obsm_key": args.obsm_key,
+        "min_genes": args.min_genes,
+        "min_cells": args.min_cells,
+        "token_batch_size": args.token_batch_size,
+        "dataloader_num_workers": args.dataloader_num_workers,
+        "joblib_cache_size": args.joblib_cache_size,
+        "prefetch_factor": args.prefetch_factor,
+        "pin_memory": parse_bool(args.pin_memory) if args.pin_memory is not None else None,
+        "inference_amp": parse_bool(args.inference_amp) if args.inference_amp is not None else None,
+        "amp_dtype": args.amp_dtype,
         "neighbor_enhance": parse_bool(args.neighbor_enhance) if args.neighbor_enhance is not None else None,
         "use_gene_id_emb": parse_bool(args.use_gene_id_emb) if args.use_gene_id_emb is not None else None,
         "gene_id": parse_bool(args.use_gene_id_emb) if args.use_gene_id_emb is not None else None,
@@ -496,8 +516,11 @@ def main() -> None:
 
     use_hvg = parse_bool(resolve_single_value(args.use_hvg, config, ["use_hvg"], default=True))
     n_hvg = int(resolve_single_value(args.n_hvg, config, ["n_hvg"], default=1000))
+    min_genes = int(resolve_single_value(args.min_genes, config, ["min_genes"], default=0))
+    min_cells = int(resolve_single_value(args.min_cells, config, ["min_cells"], default=3))
     force_tokenize = parse_bool(resolve_single_value(args.force_tokenize, config, ["force_tokenize"], default=True))
     use_dev_abs = parse_bool(resolve_single_value(args.use_dev_abs, config, ["use_dev_abs"], default=False))
+    token_batch_size = int(resolve_single_value(args.token_batch_size, config, ["token_batch_size", "batch_size"], default=16))
 
     adata_paths = discover_adata_paths(args.adata_path, config)
 
@@ -549,54 +572,71 @@ def main() -> None:
     print(f"Resolved {len(adata_paths)} h5ad files.")
     print(f"Using device: {device}")
     print("masking_p is fixed to 0 for inference.")
+    print(f"Token batch size: {token_batch_size}")
+    print(f"DataLoader workers: {int(config.get('dataloader_num_workers', 4))}")
 
-    for index, (adata_path, token_data_path, output_h5ad, npz_save_path) in enumerate(
-        zip(adata_paths, token_data_paths, output_h5ad_paths, npz_save_paths),
-        start=1,
-    ):
-        print(f"[{index}/{len(adata_paths)}] Reading {adata_path}")
-        adata = read_h5ad(adata_path)
+    pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config, device=device)
 
-        tokenize_specie, tokenize_assay = resolve_tokenization_metadata(
-            adata_path=adata_path,
-            adata=adata,
-            config=config,
-            cli_specie=args.tokenize_specie,
-            cli_assay=args.tokenize_assay,
-        )
-        print(
-            f"[{index}/{len(adata_paths)}] Tokenizing with specie={tokenize_specie}, assay={tokenize_assay} -> {token_data_path}"
-        )
+    try:
+        for index, (adata_path, token_data_path, output_h5ad, npz_save_path) in enumerate(
+            zip(adata_paths, token_data_paths, output_h5ad_paths, npz_save_paths),
+            start=1,
+        ):
+            if os.path.exists(output_h5ad):
+                print(f"[{index}/{len(adata_paths)}] Skipping existing output: {output_h5ad}")
+                continue
 
-        token_data_path = run_tokenization(
-            adata_path=adata_path,
-            bb_token_dir=token_data_path,
-            gene_dict_path=gene_dict_path,
-            specie=tokenize_specie,
-            assay=tokenize_assay,
-            use_hvg=use_hvg,
-            n_hvg=n_hvg,
-            force_tokenize=force_tokenize,
-            use_dev_abs=use_dev_abs,
-        )
+            print(f"[{index}/{len(adata_paths)}] Reading {adata_path}")
+            adata = read_h5ad(adata_path)
 
-        if npz_save_path is not None:
-            ensure_parent_dir(npz_save_path)
-        ensure_parent_dir(output_h5ad)
+            tokenize_specie, tokenize_assay = resolve_tokenization_metadata(
+                adata_path=adata_path,
+                adata=adata,
+                config=config,
+                cli_specie=args.tokenize_specie,
+                cli_assay=args.tokenize_assay,
+            )
+            print(
+                f"[{index}/{len(adata_paths)}] Tokenizing with specie={tokenize_specie}, assay={tokenize_assay} -> {token_data_path}"
+            )
 
-        print(f"[{index}/{len(adata_paths)}] Running BrainBeacon inference from {token_data_path}")
-        embeddings = run_bb_inference(
-            adata=adata,
-            token_data_path=token_data_path,
-            config_train=config,
-            pretrain_ckpt=pretrain_ckpt,
-            device=device,
-            save_path=npz_save_path,
-        )
+            token_data_path = run_tokenization(
+                adata_path=adata_path,
+                bb_token_dir=token_data_path,
+                gene_dict_path=gene_dict_path,
+                specie=tokenize_specie,
+                assay=tokenize_assay,
+                use_hvg=use_hvg,
+                n_hvg=n_hvg,
+                force_tokenize=force_tokenize,
+                use_dev_abs=use_dev_abs,
+                min_genes=min_genes,
+                min_cells=min_cells,
+                token_batch_size=token_batch_size,
+            )
 
-        adata.obsm[obsm_key] = embeddings
-        adata.write_h5ad(output_h5ad)
-        print(f"[{index}/{len(adata_paths)}] Saved h5ad to {output_h5ad}")
+            if npz_save_path is not None:
+                ensure_parent_dir(npz_save_path)
+            ensure_parent_dir(output_h5ad)
+
+            print(f"[{index}/{len(adata_paths)}] Running BrainBeacon inference from {token_data_path}")
+            embeddings = run_bb_inference(
+                adata=adata,
+                token_data_path=token_data_path,
+                config_train=config,
+                pretrain_ckpt=pretrain_ckpt,
+                device=device,
+                save_path=npz_save_path,
+                pipeline=pipeline,
+            )
+
+            adata.obsm[obsm_key] = embeddings
+            adata.write_h5ad(output_h5ad)
+            print(f"[{index}/{len(adata_paths)}] Saved h5ad to {output_h5ad}")
+    finally:
+        del pipeline
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
