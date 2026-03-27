@@ -1,9 +1,9 @@
+import math
 import scanpy as sc
 import pandas as pd
 import numpy as np
 import anndata as ad
 import scipy
-from sklearn.preprocessing import LabelEncoder
 import torch
 from torch.utils.data import Dataset
 import json
@@ -12,6 +12,7 @@ import warnings
 from typing import List
 import torch.nn.functional as F
 from scipy.sparse import csr_matrix
+from sklearn.preprocessing import LabelEncoder
 
 SPATIAL_PLATFORM_LIST = ['merfish', 'xenium', 'starmap', 'slideseqv2', 'stereo']
 
@@ -28,7 +29,10 @@ class TranscriptomicDataset(Dataset):
                  batch_gene_list: dict = None,
                  covariate_encoders: dict = None,
                  label_encoders: dict = None,
-                 order_required: bool = False):
+                 order_required: bool = False,
+                 partition_mode: str = "batch",  # "patch"
+                 target_cells_per_patch: int = 2000,
+                 halo_expand_ratio: float = 0.1):
         self.seq_list = []
         self.coord_list = []
         self.order_list = []
@@ -37,6 +41,10 @@ class TranscriptomicDataset(Dataset):
         self.label_fields = label_fields
         self.order_required = order_required
         self.gene_list = adata.var.index.tolist()
+        self.partition_mode = partition_mode
+        self.target_cells_per_patch = target_cells_per_patch
+        self.halo_expand_ratio = halo_expand_ratio
+        assert self.partition_mode in ["batch", "patch"], f"Unsupported partition_mode: {self.partition_mode}"
 
         if self.batch_gene_list:
             assert 'batch' in adata.obs, 'Batch specific gene list is set but batch labels are not found in AnnData.obs.'
@@ -109,9 +117,19 @@ class TranscriptomicDataset(Dataset):
             if 'batch' in adata.obs:
                 self.batch_list.append(batch_le.classes_[batch])
 
-            if 'platform' in adata.obs and adata.obs['platform'][batch_labels == batch][0] in SPATIAL_PLATFORM_LIST:
-                coord_x = torch.tensor(adata.obs['x_FOV_px'][batch_labels == batch])[:, None]
-                coord_y = torch.tensor(adata.obs['y_FOV_px'][batch_labels == batch])[:, None]
+            # if 'platform' in adata.obs and adata.obs['platform'][batch_labels == batch][0] in SPATIAL_PLATFORM_LIST:
+            #     coord_x = torch.tensor(adata.obs['x_FOV_px'][batch_labels == batch])[:, None]
+            #     coord_y = torch.tensor(adata.obs['y_FOV_px'][batch_labels == batch])[:, None]
+            #     self.coord_list.append(torch.cat([coord_x, coord_y], 1))
+            if 'platform' in adata.obs and adata.obs.loc[batch_labels == batch, 'platform'].iloc[0] in SPATIAL_PLATFORM_LIST:
+                coord_x = torch.tensor(
+                    adata.obs.loc[batch_labels == batch, 'x_FOV_px'].to_numpy(),
+                    dtype=torch.float32,
+                )[:, None]
+                coord_y = torch.tensor(
+                    adata.obs.loc[batch_labels == batch, 'y_FOV_px'].to_numpy(),
+                    dtype=torch.float32,
+                )[:, None]
                 self.coord_list.append(torch.cat([coord_x, coord_y], 1))
             else:
                 self.coord_list.append(torch.zeros(x.shape[0], 2) - 1)
@@ -397,3 +415,129 @@ def data_setup(adata, return_sparse=True, device='cpu'):
         label_list.append(torch.from_numpy(labels[batch_labels == batch].astype(int)).to(device))
     del order
     return seq_list, batch_list, batch_labels, order_list, dataset_list, coord_list, label_list
+
+
+def make_spatial_patches(
+    coord,
+    target_cells_per_patch=2000,
+    halo_ratio=0.2,
+):
+    """
+    Build spatial patches for one slice.
+
+    Parameters
+    ----------
+    coord : torch.Tensor
+        Cell coordinates with shape [n_cells, 2].
+    target_cells_per_patch : int, default=2000
+        Target number of center cells per patch.
+    halo_ratio : float, default=0.1
+        Relative padding ratio added to each side of the center patch.
+
+    Returns
+    -------
+    patch_list : list[dict]
+        Each patch dict contains:
+            - center_idx: global indices of center cells
+            - full_idx: global indices of full patch cells (center + halo)
+            - center_mask: boolean mask of center cells in full_idx
+    grid_info : dict
+        Patch layout information for debugging.
+    """
+    assert isinstance(coord, torch.Tensor)
+    assert coord.ndim == 2 and coord.shape[1] == 2
+    assert coord.shape[0] > 0
+    assert target_cells_per_patch >= 1
+    assert halo_ratio >= 0
+
+    coord = coord.detach().cpu()
+    x = coord[:, 0]
+    y = coord[:, 1]
+
+    n_cells = coord.shape[0]
+    n_patches_target = max(1, math.ceil(n_cells / target_cells_per_patch))
+
+    x_min = x.min().item()
+    x_max = x.max().item()
+    y_min = y.min().item()
+    y_max = y.max().item()
+
+    x_range = max(x_max - x_min, 1e-8)
+    y_range = max(y_max - y_min, 1e-8)
+    aspect = x_range / y_range
+
+    n_x = max(1, math.ceil(math.sqrt(n_patches_target * aspect)))
+    n_y = max(1, math.ceil(n_patches_target / n_x))
+
+    patch_w = x_range / n_x
+    patch_h = y_range / n_y
+
+    # Assign each cell to one center grid
+    grid_x = torch.floor((x - x_min) / patch_w).long()
+    grid_y = torch.floor((y - y_min) / patch_h).long()
+
+    # Clamp boundary cells to the last bin
+    grid_x = torch.clamp(grid_x, min=0, max=n_x - 1)
+    grid_y = torch.clamp(grid_y, min=0, max=n_y - 1)
+
+    linear_id = grid_x * n_y + grid_y
+
+    # Sort once, then group by patch id
+    sort_idx = torch.argsort(linear_id)
+    linear_id_sorted = linear_id[sort_idx]
+
+    unique_ids, counts = torch.unique_consecutive(linear_id_sorted, return_counts=True)
+    starts = torch.cat([
+        torch.tensor([0], dtype=torch.long),
+        counts.cumsum(0)[:-1]
+    ])
+
+    patch_list = []
+
+    for uid, start, count in zip(unique_ids.tolist(), starts.tolist(), counts.tolist()):
+        i = uid // n_y
+        j = uid % n_y
+
+        center_idx = sort_idx[start:start + count]
+
+        cx0 = x_min + i * patch_w
+        cx1 = x_min + (i + 1) * patch_w
+        cy0 = y_min + j * patch_h
+        cy1 = y_min + (j + 1) * patch_h
+
+        pad_x = (cx1 - cx0) * halo_ratio
+        pad_y = (cy1 - cy0) * halo_ratio
+
+        fx0 = cx0 - pad_x
+        fx1 = cx1 + pad_x
+        fy0 = cy0 - pad_y
+        fy1 = cy1 + pad_y
+
+        full_mask = (x >= fx0) & (x <= fx1) & (y >= fy0) & (y <= fy1)
+        full_idx = torch.nonzero(full_mask, as_tuple=False).squeeze(1).long()
+
+        center_mask = torch.zeros(full_idx.shape[0], dtype=torch.bool)
+
+        # Map global cell index to local patch position
+        pos_map = {idx.item(): pos for pos, idx in enumerate(full_idx)}
+        center_pos = [pos_map[idx.item()] for idx in center_idx]
+        center_mask[torch.tensor(center_pos, dtype=torch.long)] = True
+
+        patch_list.append({
+            "center_idx": center_idx,
+            "full_idx": full_idx,
+            "center_mask": center_mask,
+        })
+
+    grid_info = {
+        "n_cells": n_cells,
+        "n_patches_target": n_patches_target,
+        "n_patches_actual": len(patch_list),
+        "n_x": n_x,
+        "n_y": n_y,
+        "patch_w": patch_w,
+        "patch_h": patch_h,
+        "halo_ratio": halo_ratio,
+    }
+
+    return patch_list, grid_info

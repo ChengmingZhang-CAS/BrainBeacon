@@ -4,7 +4,6 @@ import torch
 import joblib
 import shutil
 import torch.nn as nn
-import scanpy as sc
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -12,8 +11,34 @@ from torch.utils.data import Dataset
 from typing import Union, List
 
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.utils import tokenization_h5ad, process_parquet, set_seed
-from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
+from brainbeacon.configs.config_train import config_train
+
+
+def normalize_brainbeacon_model_config(model_config: dict) -> dict:
+    """Normalize legacy and current BrainBeacon config keys for inference."""
+    normalized = dict(model_config)
+
+    if "use_esm_emb" not in normalized and "use_esm_embedding" in normalized:
+        normalized["use_esm_emb"] = bool(normalized["use_esm_embedding"])
+    if "use_esm_embedding" not in normalized and "use_esm_emb" in normalized:
+        normalized["use_esm_embedding"] = bool(normalized["use_esm_emb"])
+
+    if "use_gene_id_emb" not in normalized and "gene_id" in normalized:
+        normalized["use_gene_id_emb"] = bool(normalized["gene_id"])
+    if "gene_id" not in normalized and "use_gene_id_emb" in normalized:
+        normalized["gene_id"] = bool(normalized["use_gene_id_emb"])
+
+    normalized.setdefault("neighbor_enhance", True)
+    normalized.setdefault("use_gene_id_emb", True)
+    normalized.setdefault("use_homo_emb", True)
+    normalized.setdefault("use_rna_type_emb", True)
+    normalized.setdefault("use_esm_emb", True)
+    normalized.setdefault("use_esm_embedding", bool(normalized["use_esm_emb"]))
+    normalized.setdefault("use_pos_emb", True)
+    normalized.setdefault("use_density_emb", True)
+    normalized.setdefault("density_token_idx", 2)
+
+    return normalized
 
 
 def masked_mean_pooling(transformer_output, mask):
@@ -126,7 +151,7 @@ def masked_weighted_pooling(
 class BrainBeaconCellCluster(nn.Module):
     def __init__(self, model_config):
         super().__init__()
-        self.model_config = model_config
+        self.model_config = normalize_brainbeacon_model_config(model_config)
         self.pretrain_model = BrainBeacon(
             dim_model=self.model_config["dim_model"],
             nheads=self.model_config['nheads'],
@@ -140,23 +165,35 @@ class BrainBeaconCellCluster(nn.Module):
             n_neighbor=self.model_config['num_neighbors'],
             esm_embedding_dim=self.model_config['ems_embedding_dim'],
             total_context_length=self.model_config['context_length'] * self.model_config['num_neighbors'],
-            use_gene_id_emb=self.model_config.get("use_gene_id_emb", True),  # Added: configurable switch
-            use_homo_emb=self.model_config.get("use_homo_emb", True),  # new
-            use_rna_type_emb=self.model_config.get("use_rna_type_emb", True),  # new
-            use_esm_emb=self.model_config.get("use_esm_emb", True)  # new
+            neighbor_enhance=self.model_config["neighbor_enhance"],
+            use_gene_id_emb=self.model_config["use_gene_id_emb"],
+            use_homo_emb=self.model_config["use_homo_emb"],
+            use_rna_type_emb=self.model_config["use_rna_type_emb"],
+            use_esm_emb=self.model_config["use_esm_emb"],
+            use_pos_emb=self.model_config["use_pos_emb"],
+            use_density_emb=self.model_config["use_density_emb"],
+            density_token_idx=self.model_config["density_token_idx"],
         )
 
-    def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution, sequence_mask):
-        token_embedding = self.pretrain_model.embedding(x_gene_id, x_connect_id, x_rna_type)
-        token_embedding += self.pretrain_model.esm_embedding_projection(esm_embedding)
-        if self.model_config['neighbor_enhance']:
-            neighbor_embedding = self.pretrain_model.neighbor_projection(neighbor_gene_distribution)
-            token_embedding += neighbor_embedding
-        pos = self.pretrain_model.pos.to(token_embedding.device)
-        pos_embedding = self.pretrain_model.positional_embedding(pos)  # batch x (n_tokens) x dim_model
-        embeddings = self.pretrain_model.dropout(token_embedding + pos_embedding)
-        transformer_output = self.pretrain_model.encoder(embeddings, src_key_padding_mask=attention_mask)
-        return transformer_output
+    def forward(
+        self,
+        x_gene_id,
+        x_connect_id,
+        x_rna_type,
+        attention_mask,
+        esm_embedding,
+        neighbor_gene_distribution,
+        sequence_mask=None
+    ):
+        del sequence_mask
+        return self.pretrain_model.encode(
+            x_gene_id,
+            x_connect_id,
+            x_rna_type,
+            attention_mask,
+            esm_embedding,
+            neighbor_gene_distribution,
+        )
 
 
 class ZeroshotJoblibDataset(Dataset):
@@ -262,7 +299,7 @@ class CellEmbeddingPipeline:
         Initialize the pipeline with model_raw and device settings.
         """
         self.device = device
-        self.model_config = model_config
+        self.model_config = normalize_brainbeacon_model_config(model_config)
         self.model = None
         self.pretrain_ckpt: str = pretrain_ckpt
         self.initialize_model()
@@ -295,12 +332,27 @@ class CellEmbeddingPipeline:
         exp_files_list = []
         self.data_paths = data_paths
 
+        token_dirs = []
         for prefix in sorted(os.listdir(data_paths)):
-            if prefix.endswith(".parquet"):
+            dir_path = os.path.join(data_paths, prefix)
+            if not os.path.isdir(dir_path):
                 continue
-            file_prefix_list.append(os.path.join(data_paths, prefix))
-            for file in os.listdir(os.path.join(data_paths, prefix)):
-                file_path = os.path.join(data_paths, prefix, file)
+            if not prefix.startswith("tokens-"):
+                continue
+            if not any(name.startswith("real_indices_") and name.endswith(".job") for name in os.listdir(dir_path)):
+                continue
+            token_dirs.append(dir_path)
+
+        if not token_dirs:
+            raise FileNotFoundError(
+                f"No token joblib bundles were found under {data_paths}. "
+                "Expected directories like tokens-0000 containing *.job files."
+            )
+
+        for dir_path in token_dirs:
+            file_prefix_list.append(dir_path)
+            for file in sorted(os.listdir(dir_path)):
+                file_path = os.path.join(dir_path, file)
                 # print(f"Data paths: {file_path}")
                 if 'real_indices_' in file:
                     real_indices_files_list.append(file_path)
@@ -541,7 +593,6 @@ def run_tokenization(
     adata_path,
     bb_token_dir,
     gene_dict_path,
-    mean_path,
     specie,
     assay,
     use_hvg=True,
@@ -549,97 +600,109 @@ def run_tokenization(
     force_tokenize=True,
     use_dev_abs=False
 ):
+    """
+    Tokenize input AnnData into BrainBeacon joblib bundles.
+    """
+    from brainbeacon.tokenizer import tokenization_h5ad
+
     if not os.path.exists(bb_token_dir):
         os.makedirs(bb_token_dir)
-    # Check if both .parquet files and corresponding tokens-* directories exist
-    existing_parquets = [f for f in os.listdir(bb_token_dir) if f.endswith(".parquet")]
-    existing_dirs = [d for d in os.listdir(bb_token_dir) if d.startswith("tokens-") and os.path.isdir(os.path.join(bb_token_dir, d))]
 
-    # If all files exist and not forcing, skip
-    if existing_parquets and len(existing_parquets) == len(existing_dirs) and not force_tokenize:
-        print(
-            f"Tokenized data found ({len(existing_parquets)} .parquet, {len(existing_dirs)} dirs). Skipping tokenization.")
-        parquet_path = bb_token_dir
-    else:
-        if force_tokenize:
-            print("Forcing re-tokenization: clearing existing .parquet files and token folders...")
-            for item in os.listdir(bb_token_dir):
-                item_path = os.path.join(bb_token_dir, item)
-                if item.endswith(".parquet") or (item.startswith("tokens-") and os.path.isdir(item_path)):
-                    if os.path.isdir(item_path):
-                        shutil.rmtree(item_path)
-                    else:
-                        os.remove(item_path)
-        # Run tokenization if no existing Parquet files are found
-        start = time.time()
-        print("No existing tokenized files found. Running tokenization...")
-        parquet_path = tokenization_h5ad(
-            adata_path, gene_dict_path, mean_path,
-            specie=specie, assay=assay,
-            output_path=bb_token_dir,
-            use_hvg=use_hvg, n_hvg=n_hvg,
-            use_dev_abs=use_dev_abs
+    def _list_token_dirs(base_dir):
+        token_dirs = []
+        for item in sorted(os.listdir(base_dir)):
+            item_path = os.path.join(base_dir, item)
+            if not os.path.isdir(item_path):
+                continue
+            if not item.startswith("tokens-"):
+                continue
+            if not any(name.startswith("real_indices_") and name.endswith(".job") for name in os.listdir(item_path)):
+                continue
+            token_dirs.append(item_path)
+        return token_dirs
+
+    existing_token_dirs = _list_token_dirs(bb_token_dir)
+
+    if existing_token_dirs and not force_tokenize:
+        print(f"Tokenized joblib bundles found ({len(existing_token_dirs)} dirs). Skipping tokenization.")
+        return bb_token_dir
+
+    if force_tokenize:
+        print("Forcing re-tokenization: clearing existing token folders...")
+        for item in os.listdir(bb_token_dir):
+            item_path = os.path.join(bb_token_dir, item)
+            if item.startswith("tokens-") and os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+
+    start = time.time()
+    print("No existing tokenized bundles found. Running tokenization...")
+    tokenization_h5ad(
+        adata_path,
+        gene_dict_path,
+        specie=specie,
+        assay=assay,
+        output_path=bb_token_dir,
+        use_hvg=use_hvg,
+        n_hvg=n_hvg,
+        use_dev_abs=use_dev_abs,
+    )
+
+    token_dirs = _list_token_dirs(bb_token_dir)
+    if not token_dirs:
+        raise RuntimeError(
+            f"Tokenization completed, but no token joblib bundles were found under {bb_token_dir}."
         )
-        # Process all Parquet files
-        for path in os.listdir(parquet_path):
-            if path.endswith(".parquet"):
-                parquet_file = os.path.join(parquet_path, path)
-                # print(f"Processing file: {parquet_file}")
 
-                if not os.path.exists(parquet_file):
-                    print(f"Warning: {parquet_file} does not exist. Skipping...")
-                    continue
-
-                process_parquet(parquet_file, bb_token_dir)
-
-        end = time.time()
-        print(f"Preprocessing time: {(end - start)/60:.2f} minutes")
-    return parquet_path
+    end = time.time()
+    print(f"Preprocessing time: {(end - start)/60:.2f} minutes")
+    return bb_token_dir
 
 
 def run_bb_inference(
     adata,
-    parquet_path,
+    token_data_path,
     config_train,
     pretrain_ckpt,
     device,
     save_path=None
 ):
     time0 = time.time()
+    config_train = normalize_brainbeacon_model_config(config_train)
     config_train["batch_size"] = 1  # Use batch size of 1 for inference
     pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config_train, device=device)
 
     # Generate embeddings
-    pred = pipeline.run(data_paths=parquet_path, config_train=config_train)
+    pred = pipeline.run(data_paths=token_data_path, config_train=config_train)
 
     # Extract index and embeddings from pred
     pred_indices, pred_embeddings = zip(*[(str(idx[0]), emb.numpy()) for idx, emb in pred])
     pred_indices = np.array(pred_indices)
     pred_embeddings = np.array(pred_embeddings)
 
-    # Get embedding dimension
-    embedding_dim = pred_embeddings.shape[1] if pred_embeddings.size > 0 else 0
     # get obs_names from adata
     obs_names = np.array(adata.obs_names)  # Convert to NumPy array for fast operations
 
-    # Optimize assignment if orders match
+    # Require exact order match before saving or returning embeddings
     if np.array_equal(pred_indices, obs_names):
         print("obs_names and pred_indices are in the same order.")
         ordered_embeddings = pred_embeddings  # Direct assignment if order matches
     else:
-        print("warning: The order of obs_names and pred_indices do not match. Reordering embeddings...")
-        print("obs_names equal:", len(obs_names) == len(pred_indices))
-        # Initialize embeddings with zeros
-        ordered_embeddings = np.zeros((len(obs_names), embedding_dim))
+        if len(pred_indices) != len(obs_names):
+            raise ValueError(
+                "Embedding order check failed: the number of predicted embeddings does not match "
+                f"adata.obs_names ({len(pred_indices)} vs {len(obs_names)}). "
+                "Aborting without saving."
+            )
 
-        # Use NumPy for efficient lookup
-        match_mask = np.isin(obs_names, pred_indices)
-        matched_obs = obs_names[match_mask]
-
-        sorted_idx = np.argsort(pred_indices)  # Sort pred_indices for binary search
-        embedding_lookup = np.searchsorted(pred_indices[sorted_idx], matched_obs)  # Find positions
-
-        ordered_embeddings[match_mask] = pred_embeddings[sorted_idx][embedding_lookup]  # Assign values
+        mismatch_positions = np.flatnonzero(pred_indices != obs_names)
+        first_mismatch = int(mismatch_positions[0]) if mismatch_positions.size > 0 else -1
+        pred_value = pred_indices[first_mismatch] if first_mismatch >= 0 else "unknown"
+        obs_value = obs_names[first_mismatch] if first_mismatch >= 0 else "unknown"
+        raise ValueError(
+            "Embedding order check failed: predicted cell indices do not match adata.obs_names order. "
+            f"First mismatch at position {first_mismatch}: pred={pred_value}, obs={obs_value}. "
+            "Aborting without saving."
+        )
 
     if save_path is not None:
         np.savez_compressed(save_path, embeddings=ordered_embeddings)
@@ -672,6 +735,8 @@ def run_bbcellformer_recon(
     save_embedding_path=None,  # Optional now
     save_model_path=None,  # optional: save .pt model_raw weights
 ):
+    from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
+
     # Load AnnData file
     data = adata.copy()
     data.obs_names_make_unique()
@@ -708,15 +773,18 @@ def run_bbcellformer_recon(
             data.obs.loc[idx, 'x_FOV_px'] = normalized[:, 0]
             data.obs.loc[idx, 'y_FOV_px'] = normalized[:, 1]
 
-    # Initialize CellPLM embedding pipeline
+    # Initialize cellformer embedding pipeline
     overwrite_config = {
         "name": f"bb_{enc_mod}",
         "enc_mod": enc_mod,
+        # 'objective': 'nb',
         'objective': 'imputation',
         'mask_node_rate': 0.95,
         'mask_feature_rate': 0.25,
         'max_batch_size': 2000,
         'mask_type': mask_type,
+        # "use_hidden_pe": False,
+        "use_hidden_pe": True,
         # 'mask_type': 'input',
     }
     # clear GPU memory before re-initializing the pipeline
@@ -748,7 +816,7 @@ def run_bbcellformer_recon(
             fit_data = data.copy()
         pipeline.fit(
             fit_data,  # AnnData object
-            train_config={'epochs': fit_epochs},
+            train_config={'epochs': fit_epochs, "use_patch": False},
             split_field='valid_split',
             train_split='train',
             valid_split='valid',
@@ -760,6 +828,8 @@ def run_bbcellformer_recon(
         'scheduler': 'plat',
         'epochs': 100,
         'max_eval_batch_size': 1000,
+        # 'use_patch': False,
+        'use_patch': True,
         'patience': 5,
         'workers': 0,
     }
@@ -796,14 +866,12 @@ def run_bbcellformer_pipeline(
     specie: str,
     assay: str,
     gene_dict_path: str,
-    gene_mean_path: str,
-    bb_ckpt_path: str,
-    cellplm_ckpt_path: str,
+    stage1_ckpt_path: str,
+    stage2_ckpt_path: str,
     output_dir: str,
     output_prefix: str,
     path_dict: dict = None,
-    config_train: dict = None,
-    config_update: dict = None,
+    config_override: dict = None,
     n_hvg: int = 1000,
     cd_weight: float = 0.02,
     use_hvg: bool = True,
@@ -843,11 +911,9 @@ def run_bbcellformer_pipeline(
         Platform / assay name. Will be stored to ``adata.obs["platform"]``.
     gene_dict_path : str
         Path to the BrainBeacon gene dictionary (``.h5ad``).
-    gene_mean_path : str
-        Path to gene mean statistics used by tokenizer.
-    bb_ckpt_path : str
+    stage1_ckpt_path : str
         Path to BrainBeacon pretrained checkpoint.
-    cellplm_ckpt_path : str
+    stage2_ckpt_path : str
         Path to CellPLM/CellFormer pretrained checkpoint.
     output_dir : str
         Output directory for intermediate files and results.
@@ -859,7 +925,7 @@ def run_bbcellformer_pipeline(
     config_train : dict
         Training/inference configuration. Must be provided.
         This function will update it with internal defaults (e.g., ``weight_mode``, ``cd_weight``).
-    config_update : dict, optional
+    config_override : dict, optional
         Optional overrides merged into ``config_train`` after defaults are set.
 
     n_hvg : int, default 1000
@@ -914,6 +980,10 @@ def run_bbcellformer_pipeline(
         Intermediate files (tokenization outputs, BB embeddings, final embeddings/model)
         are saved under ``output_dir`` with the given ``output_prefix``.
     """
+    import scanpy as sc
+
+    from brainbeacon.tokenizer import set_seed
+
     # ====== 1. Setup ======
     os.makedirs(output_dir, exist_ok=True)
     if seed is not None:
@@ -922,7 +992,7 @@ def run_bbcellformer_pipeline(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if config_train is None:
-        raise ValueError("`config_train` must be provided.")
+        raise ValueError("`config_train` must be imported.")
 
     config_train.update({
         "weight_mode": weight_mode,
@@ -935,8 +1005,8 @@ def run_bbcellformer_pipeline(
         # "use_rna_type_emb": True,
         # "use_esm_emb": True,
     })
-    if config_update:
-        config_train.update(config_update)
+    if config_override:
+        config_train.update(config_override)
 
     # ====== 2. Load AnnData ======
     adata = sc.read_h5ad(adata_path)
@@ -944,11 +1014,10 @@ def run_bbcellformer_pipeline(
 
     # ====== 3. Tokenization ======
     bb_token_dir = os.path.join(output_dir, f"{output_prefix}_bb_token_dir")
-    parquet_path = run_tokenization(
+    token_data_path = run_tokenization(
         adata_path=adata_path,
         bb_token_dir=bb_token_dir,
         gene_dict_path=gene_dict_path,
-        mean_path=gene_mean_path,
         specie=specie,
         assay=assay,
         use_hvg=use_hvg,
@@ -962,15 +1031,19 @@ def run_bbcellformer_pipeline(
     if os.path.exists(bb_embedding_path) and not force_tokenize:
         print(f"Skipping BB inference. Found existing file: {bb_embedding_path}")
     else:
+        start_time = time.time()
+        print(f"[BB inference] Start...")
         bb_emb = run_bb_inference(
             adata=adata,
-            parquet_path=parquet_path,
+            token_data_path=token_data_path,
             config_train=config_train,
-            pretrain_ckpt=bb_ckpt_path,
+            pretrain_ckpt=stage1_ckpt_path,
             device=device,
             save_path=bb_embedding_path
         )
+        end_time = time.time()
         print(f"BB inference complete. Saved to: {bb_embedding_path}")
+        print(f"[BB inference] Time cost: {(end_time - start_time):.2f} sec")
     # adata.obsm["bb_emb"] = bb_emb
 
     # ====== 5. CellFormer Reconstruction ======
@@ -982,12 +1055,12 @@ def run_bbcellformer_pipeline(
     adata = run_bbcellformer_recon(
         adata=adata,
         bb_embedding_path=bb_embedding_path,
-        bb_pretrain_path=bb_ckpt_path,
+        bb_pretrain_path=stage1_ckpt_path,
         cellformer_version="cellformer",
         path_dict = path_dict,
-        cellformer_directory=os.path.dirname(cellplm_ckpt_path),
+        cellformer_directory=os.path.dirname(stage2_ckpt_path),
         device=device,
-        cellformer_pretrain_path=cellplm_ckpt_path,
+        cellformer_pretrain_path=stage2_ckpt_path,
         use_batch=use_batch,
         use_spatial=use_spatial,
         do_fit=do_fit,

@@ -12,6 +12,8 @@ def select_pe_encoder(pe):
         return NaivePE
     elif pe in ['lap', 'graphlap', 'lappe']:
         return GraphLapPE
+    elif pe in ['fourier', 'cont', 'continuous']:
+        return Fourier2dPE
     else:
         raise NotImplementedError(f'Unsupported positional encoding type: {pe}')
 
@@ -67,6 +69,8 @@ class Learnable2dPE(nn.Module):
         :param width: width of the positions
         """
         super().__init__()
+        self.height = height
+        self.width = width
         self.pe_enc = nn.Embedding(height * width, d_model)
         self.missing_pe = nn.Parameter(torch.randn(d_model) * 1e-2)
         self.pe_key = 'coord'
@@ -78,8 +82,8 @@ class Learnable2dPE(nn.Module):
         y = coordinates[:, 1]
         x = ((x*1.02-0.01) * self.width).long()
         y = ((y*1.02-0.01) * self.height).long()
-        x[x >= self.width] = self.width
-        y[y >= self.height] = self.height
+        x[x >= self.width] = self.width - 1
+        y[y >= self.height] = self.height - 1
         x[x < 0] = 0
         y[y < 0] = 0
         pe_input = x * self.width + y
@@ -129,3 +133,79 @@ class GraphLapPE(nn.Module):
         eigvec = eigvec * (torch.randint(0, 2, (self.k, ), dtype=torch.float, device=eigvec.device)[None, :]*2-1)
         return self.pe_enc(eigvec)
 
+import torch
+from torch import nn
+import math
+
+
+class Fourier2dPE(nn.Module):
+    """
+    Continuous Fourier features for 2D coordinates in [0,1].
+
+    This version is tuned for locality (recommended default):
+      - lower max_freq to reduce oscillation/aliasing
+      - apply frequency attenuation so low-freq dominates (more monotone-like locally)
+      - keep interface unchanged: forward(coords)->(N, d_model)
+      - NOT a 100x100 grid lookup (fully continuous)
+    """
+    def __init__(
+        self,
+        d_model: int,
+        max_freq: float = 8.0,
+        freq_scale: str = "log",          # "log" or "linear"
+        weight_type: str = "inv",         # "none" | "inv" | "exp"
+        weight_alpha: float = 1.0,        # inv: 1/(f^alpha), exp: exp(-alpha*f)
+        normalize_weight: bool = True,    # keep overall magnitude stable
+        eps: float = 1e-12,
+        height=None,
+        width=None,
+    ):
+        super().__init__()
+        if d_model % 4 != 0:
+            raise ValueError(f"Fourier2dPE requires d_model % 4 == 0, got {d_model}")
+
+        self.pe_key = "coord"
+        self.missing_pe = nn.Parameter(torch.randn(d_model) * 1e-2)
+
+        half = d_model // 2               # x part + y part
+        n_freq = half // 2                # sin+cos pairs per axis
+
+        # Frequencies
+        if freq_scale == "log":
+            freqs = torch.logspace(0, math.log10(max_freq), steps=n_freq)
+        elif freq_scale == "linear":
+            freqs = torch.linspace(1.0, max_freq, steps=n_freq)
+        else:
+            raise ValueError(f"Unsupported freq_scale={freq_scale}")
+
+        # Frequency attenuation (locality-friendly)
+        if weight_type == "none":
+            w = torch.ones_like(freqs)
+        elif weight_type == "inv":
+            w = 1.0 / (freqs.clamp(min=eps) ** float(weight_alpha))
+        elif weight_type == "exp":
+            w = torch.exp(-float(weight_alpha) * freqs)
+        else:
+            raise ValueError(f"Unsupported weight_type={weight_type}")
+
+        if normalize_weight:
+            w = w / (w.mean().clamp(min=eps))
+
+        self.register_buffer("freqs", freqs)   # (n_freq,)
+        self.register_buffer("freq_w", w)      # (n_freq,)
+
+    def forward(self, coordinates: torch.Tensor) -> torch.Tensor:
+        if coordinates[0][0] == -1:
+            return self.missing_pe.unsqueeze(0).expand(coordinates.shape[0], -1)
+
+        x = coordinates[:, 0:1]  # (N,1)
+        y = coordinates[:, 1:2]
+
+        wx = x * (2 * math.pi) * self.freqs[None, :]  # (N, n_freq)
+        wy = y * (2 * math.pi) * self.freqs[None, :]
+
+        w = self.freq_w[None, :]  # (1, n_freq)
+
+        pe_x = torch.cat([torch.sin(wx) * w, torch.cos(wx) * w], dim=1)  # (N, 2*n_freq)
+        pe_y = torch.cat([torch.sin(wy) * w, torch.cos(wy) * w], dim=1)  # (N, 2*n_freq)
+        return torch.cat([pe_x, pe_y], dim=1)                            # (N, d_model)

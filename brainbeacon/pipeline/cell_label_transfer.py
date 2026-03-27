@@ -10,14 +10,13 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, adjusted_rand_score
 from typing import List
 
-from brainbeacon.utils import set_seed
+from brainbeacon.tokenizer import set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.cell_type_annotation import CellTypeAnnotationPipeline
 from brainbeacon.pipeline.cell_embedding import run_tokenization, run_bb_inference
 
 from brainbeacon.configs.config import resolve_path
 from brainbeacon.configs.config_train import config_train
-from brainbeacon.utils import get_gene_mean_path
 
 def train_encoder_on_adata(
     adata,
@@ -173,8 +172,6 @@ def train_encoder_on_multi_adata(
             adata.obs["platform"] = assay
 
             gene_dict_path = resolve_path("GENE_DICT_PATH", path_dict)
-            prior_dir = resolve_path("PRIOR_DIR", path_dict)
-            gene_mean_path = get_gene_mean_path(prior_dir, assay, use_metacell=True)
 
             output_dir_epoch = os.path.join(output_dir, data_name)
             os.makedirs(output_dir_epoch, exist_ok=True)
@@ -194,11 +191,10 @@ def train_encoder_on_multi_adata(
             else:
                 config_train["batch_size"] = batch_size
 
-            parquet_path = run_tokenization(
+            token_data_path = run_tokenization(
                 adata_path=adata_path,
                 bb_token_dir=bb_token_dir,
                 gene_dict_path=gene_dict_path,
-                mean_path=gene_mean_path,
                 specie=specie,
                 assay=assay,
                 use_hvg=True,
@@ -213,7 +209,7 @@ def train_encoder_on_multi_adata(
             else:
                 run_bb_inference(
                     adata=adata,
-                    parquet_path=parquet_path,
+                    token_data_path=token_data_path,
                     config_train=config_train,
                     pretrain_ckpt=bb_ckpt_path,
                     device=device,

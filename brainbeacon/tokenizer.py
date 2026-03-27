@@ -193,6 +193,7 @@ def normalize_gene_dict_var(gene_dict):
         if target not in gene_dict.var.columns and source in gene_dict.var.columns:
             gene_dict.var[target] = gene_dict.var[source]
     required_columns = {"gene_id", "homo_connect_id", "gene_type_id"}
+    # required_columns = {"gene_id", "homo_connect_id_old", "gene_type_id"}
     missing = required_columns.difference(gene_dict.var.columns)
     if missing:
         missing_list = ", ".join(sorted(missing))
@@ -1122,6 +1123,7 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
         tokenized, tokenized_connect_comp, tokenized_rna_type, tokenized_deviation_bin, tokenized_exp = tokenize_data(
             x=np.asarray(X_chunk),
             gene_connect_comp=adata_output.var["homo_connect_id"].values,
+            # gene_connect_comp=adata_output.var["homo_connect_id_old"].values,
             gene_id=adata_output.var["gene_id"].values,
             gene_type_id=adata_output.var[gene_type_col].values,
             deviation_bin=adata_output.obsm["deviation_bin"][batch * chunk_len:chunk_len * (batch + 1)],
@@ -1242,6 +1244,7 @@ def _build_global_feature_lookups(var_frame, n_aux, n_tokens):
     gene_type_col = _gene_type_column(var_frame)
     gene_ids = np.asarray(var_frame["gene_id"], dtype=np.int32) + n_aux
     connect_comp_ids = np.asarray(var_frame["homo_connect_id"], dtype=np.int32) + 1
+    # connect_comp_ids = np.asarray(var_frame["homo_connect_id_old"], dtype=np.int32) + 1
     rna_type_ids = np.asarray(var_frame[gene_type_col], dtype=np.int32) + 1
     max_gene_token = int(gene_ids.max()) if gene_ids.size else 0
     lookup_size = max(max_gene_token + 1, n_tokens + n_aux + 1)
