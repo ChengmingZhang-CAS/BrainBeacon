@@ -14,10 +14,11 @@ from ..head import setup_head
 # Modified from CellPLM (https://github.com/OmicsML/CellPLM) for BrainBeacon integration.
 class OmicsFormer(nn.Module):
     def __init__(self, gene_list, enc_mod, enc_hid, enc_layers, post_latent_dim, dec_mod, dec_hid, dec_layers,
-                 out_dim, batch_num=0, dataset_num=0, platform_num=0, mask_type='input', model_dropout=0.1,
+                 out_dim, batch_num=0, dataset_num=0, platform_num=0, mask_type='hidden', model_dropout=0.1,
                  activation='gelu', norm='layernorm', enc_head=8, mask_node_rate=0.5,
-                 mask_feature_rate=0.8, drop_node_rate=0., max_batch_size=2000, cat_dim=None, conti_dim=None,
-                 pe_type='sin', cat_pe=True,
+                 mask_feature_rate=0.8, drop_node_rate=0., max_batch_size=2000, use_spatial_patch=True, center_ratio=0.8,
+                 cat_dim=None, conti_dim=None,
+                 pe_type='fourier', cat_pe=True, use_hidden_pe=True,
                  gene_emb=None, latent_mod='vae', w_li=1., w_en=1., w_ce=1.,
                  head_type=None, dsbn=False, ecs=False, dar=False, input_covariate=False,
                  num_clusters=16, dae=True, lamda=0.5, mask_beta=False, **kwargs):
@@ -35,6 +36,7 @@ class OmicsFormer(nn.Module):
             self.linear_bb = nn.Linear(self.bb_emb_dim, enc_hid)
         else:
             self.linear_bb = nn.Identity()
+        self.use_hidden_pe = use_hidden_pe and (pe_type is not None)
 
         self.gene_set = set(gene_list)
         self.mask_type = mask_type
@@ -42,7 +44,8 @@ class OmicsFormer(nn.Module):
             if mask_type == 'input':
                 self.mask_model = MaskBuilder(mask_node_rate, mask_feature_rate, drop_node_rate, max_batch_size, mask_beta)
             elif mask_type == 'hidden':
-                self.mask_model = HiddenMaskBuilder(mask_node_rate, mask_feature_rate, drop_node_rate, max_batch_size)
+                self.mask_model = HiddenMaskBuilder(mask_node_rate, mask_feature_rate, drop_node_rate, max_batch_size,
+                                                    use_spatial_patch, center_ratio)
             else:
                 raise NotImplementedError(f"Only support mask_type in ['input', 'hidden'], but got {mask_type}")
         else:
@@ -111,6 +114,17 @@ class OmicsFormer(nn.Module):
 
         elif self.mask_type == 'hidden':
             bb_emb = self.linear_bb(x_dict['bb_emb'])  # [B, enc_hid]
+            if self.use_hidden_pe:  # add PE to hidden branch
+                pe_input = x_dict[self.embedder.pe_enc.pe_key]
+                pe = self.embedder.pe_enc(pe_input)
+                if self.embedder.inject_covariate:
+                    pe = pe + self.embedder.cov_enc(x_dict['batch'])
+                if self.embedder.cat_pe:
+                    raise ValueError("cat_pe=True is not supported in hidden branch")
+                else:
+                    bb_emb = bb_emb + pe
+
+            # bb_emb = bb_emb.to(self.bb_norm.weight.dtype)  # fix bug: expected scalar type Double but found Float
             bb_emb = self.bb_norm(bb_emb)
             x_dict['h'] = bb_emb
             x_dict = self.mask_model.apply_mask(x_dict)

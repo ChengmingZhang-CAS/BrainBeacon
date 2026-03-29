@@ -8,6 +8,7 @@ from .experimental import symbol_to_ensembl
 import json
 import warnings
 import scanpy as sc
+from importlib.resources import files
 from brainbeacon.configs.config import resolve_path
 from brainbeacon.configs.config_train import config_train
 
@@ -57,7 +58,8 @@ def load_pretrain(
         path_dict: dict | None = None,
 ):
     pretrain_directory = resolve_path("PRETRAIN_DIR", path_dict=path_dict)
-    config_path = os.path.join(pretrain_directory, f'cellformer.config.json')
+    # config_path = os.path.join(pretrain_directory, f'cellformer.config.json')
+    config_path = files("brainbeacon.configs").joinpath("cellformer.config.json")
     if cellformer_pretrain_path is not None:
         final_ckpt_path = cellformer_pretrain_path
         print(f"[INFO] Using explicitly provided CellFormer checkpoint: {final_ckpt_path}")
@@ -83,14 +85,16 @@ def load_pretrain(
     esm_embedding_path = resolve_path("ESM_EMBED_PATH", path_dict=path_dict)
     gene_schema = sc.read_h5ad(gene_dict_path)
     config['gene_list'] = gene_schema.var.index.tolist()
-    if 'head_type' not in config:  # 确保 head_type 存在
+    if 'head_type' not in config:
         config['out_dim'] = len(config['gene_list'])
     print("*"*10, f"gene list size: {len(config['gene_list'])}", "*"*10)
 
     if config['mask_type'] == "hidden":
         # here just use gene_id embedding
-        bb_model_state = torch.load(bb_pretrain_path, map_location="cpu")
-        config['gene_emb'] = bb_model_state['model_state_dict']['embedding.basic_embedding.weight']
+        # bb_model_state = torch.load(bb_pretrain_path, map_location="cpu")
+        # config['gene_emb'] = bb_model_state['model_state_dict']['embedding.homo_connect_embedding.weight']
+        bb_model_state = None
+        config['gene_emb'] = None
     else:
         # mask type is "input"
         bb_model_state = None

@@ -1,0 +1,342 @@
+# Example config for inference_main.py
+# This file can drive single-file or batch inference.
+#
+# Available batch input styles:
+# 1. adata_path: /path/to/one_file.h5ad
+# 2. adata_paths:
+#      - /path/a.h5ad
+#      - /path/b.h5ad
+# 3. adata_parent_dirs:
+#      - /path/to/private
+#      - /path/to/public
+#
+# Template placeholders:
+#   {index}, {adata_path}, {adata_name}, {adata_stem}, {adata_suffix}, {adata_parent}
+
+# Batch input discovery
+# Explicitly enumerated from the remote server on 2026-03-18.
+adata_paths:
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T1001_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T716_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T765_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T817_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T819_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T899_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T901_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T978_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T992_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/human/impu/T996_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T115_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T128_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T131_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T135_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T142_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T25_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T27_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T47_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T48_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T50_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T51_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T56_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T58_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T60_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T67_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T68_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T78_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T81_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T84_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T85_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T92_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T96_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T97_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaqe1/impu/Macaque_T98_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaque3/impu/Macaque_T837_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaque3/impu/Macaque_T866_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaque3/impu/Macaque_T868_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macaque3/impu/Macaque_T869_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macque2/impu/Macaque_T574_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macque2/impu/Macaque_T587_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macque2/impu/Macaque_T590_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/macque2/impu/Macaque_T591_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T402_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T415_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T435_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T439_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T440_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T441_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T449_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T455_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T465_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T471_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T473_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T474_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T478_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T480_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T485_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T490_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T491_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T494_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T496_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T506_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T508_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T511_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T519_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T522_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_1/impu/T528_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_2/impu/T535_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_2/impu/T539_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_2/impu/T541_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_2/impu/T554_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_2/impu/T559_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/marmoset_2/impu/T561_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T171_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T173_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T175_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T196_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T213_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T214_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T231_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T232_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T235_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T247_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T248_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T262_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T268_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T271_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T274_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T276_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T283_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T285_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T286_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T294_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T295_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T299_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T300_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T304_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T307_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T316_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T322_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T326_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T339_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T341_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T347_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T350_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T351_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T352_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T354_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T355_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T358_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T365_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/private/mouse/impu/T369_impu.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Human_Developing/ARKFrozen-82-PFC.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Merfish_Visp/mouse_VISp.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.11.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.26.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.27.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.28.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.44.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.47.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.49.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.54.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.56.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.60.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.61.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Yao2023Atlas/C57BL6J-638850.67.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice15.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice18.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice2.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice22.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice4.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice41_p2.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice51.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice56.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice59.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse1_coronal_co1_slice8.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice104.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice105.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice110.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice111.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice115.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice117.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice124.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice125.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice127.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice13.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice130.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice138.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice145.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice15.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice19.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice2.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice22.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice23.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice3.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice31.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice37.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice4.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice47.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice5.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice59.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice6.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice64.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice68.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice72.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice79.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice80.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice81.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice82.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice84.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice85.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice9.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse2_coronal_co2_slice98.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse3_sagittal_sa1_slice13.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse3_sagittal_sa1_slice16.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_Zhang2023Amolecularly_rawcount/raw_counts_mouse3_sagittal_sa1_slice24.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_1.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_10.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_109.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_11.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_127.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_128.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_134.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_137.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_139.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_14.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_140.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_144.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_15.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_150.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_157.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_167.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_168.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_170.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_177.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_179.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_18.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_21.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_34.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_35.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_36.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_44.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_52.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_53.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_55.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_58.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_59.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_62.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_65.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_83.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_84.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_87.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_moffitt2018molecular/moffitt2018molecular_merFISH_mouse_hypothalamic_preoptic_region_97.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice112.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice131.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice180.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice200.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice221.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice251.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice326.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse1_slice62.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse2_slice1.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse2_slice109.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse2_slice249.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse2_slice79.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/MERFISH/MERFISH_Mouse_zhang2021spatially/mouse2_slice90.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Shi2023Spatial/well01OB.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Shi2023Spatial/well01brain.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Shi2023Spatial/well04.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Shi2023Spatial/well08.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Wang2018three/data_2D_zstep10_1.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Wang2018three/data_2D_zstep10_4.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Wang2018three/data_2D_zstep10_7.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Wang2018three/data_2D_zstep25_1.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Wang2018three/data_2D_zstep30_0.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Wang2018three/data_2D_zstep45_0.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/STARmap/STARmap_Mouse_Zeng2023Integrative/spatial_8months-control-replicate_2.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Cable2022CSIDE/slideseq_cerebellum_rep1.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB1-Slide02.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB1-Slide10.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB1-Slide14.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB1-Slide20.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB2-Slide03.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB2-Slide11.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB2-Slide16.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_Wang2022OB/OB2-Slide18.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/SlideseqV2/SlideseqV2_Mouse_stickels2020highly/stickels2021highly_SlideSeqV2_Mouse_Olfactory_bulb_Puck_200127_15.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/Xenium/Xenium_Human_Preview_FFPE/Xenium_V1_FFPE_Human_Brain_Healthy_With_Addon.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/Xenium/Xenium_Mouse_Alzheimer_FFPE/Xenium_V1_FFPE_wildtype_5_7_months.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/Xenium/Xenium_Mouse_ExplorerDemo_FF/Xenium_V1_FF_Mouse_Brain_Coronal.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/Xenium/Xenium_Mouse_Hemisphere_FF/Xenium_Prime_Mouse_Brain_Coronal_FF.h5ad
+  - /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_impu/subsample_traindata_20per/public/Xenium/Xenium_Mouse_Replicates_FF/Xenium_V1_FF_Mouse_Brain_MultiSection_3.h5ad
+
+# Runtime I/O
+pretrain_ckpt: /path/to/brainbeacon_checkpoint.pt
+gene_dict_path: /path/to/brainbeacon_gene_dict.h5ad
+token_data_path_template: /path/to/token_dirs/{index}_{adata_stem}_bb_token_dir
+output_h5ad_template: /path/to/output_h5ad/{index}_{adata_stem}_with_bb_emb.h5ad
+obsm_key: bb_emb
+device: cuda:0
+
+# Tokenization
+use_hvg: true
+n_hvg: 1000
+force_tokenize: true
+use_dev_abs: false
+
+# Optional tokenization metadata overrides.
+# If omitted, inference_main.py will try:
+# 1. tokenize_*_by_path
+# 2. tokenize_* global value
+# 3. metadata inside each h5ad
+# 4. path-based inference
+#    The current inference_main.py treats any path under `/private/` as `stereo`.
+# tokenize_specie: mouse
+# tokenize_assay: merfish
+# tokenize_specie_by_path:
+#   /abs/path/sample_a.h5ad: human
+# tokenize_assay_by_path:
+#   sample_a.h5ad: xenium
+
+# Model
+dim_model: 1024
+nheads: 16
+dim_feedforward: 1024
+nlayers: 16
+dropout: 0.1
+n_tokens: 92076
+n_connect_comp: 46502
+n_aux: 20
+n_rna_type: 33
+num_neighbors: 4
+context_length: 1000
+
+# ESM embedding
+use_esm_embedding: true
+ems_embedding_dim: 5120
+esm_embedding_path: /path/to/esm2_embeddings_d5120.pt
+
+# Task
+autoregressive: false
+pool: null
+supervised_task: false
+learnable_pe: true
+organ: everything
+specie: true
+assay: true
+modality: false
+contrastive: false
+neighbor_enhance: true
+gene_id: true
+
+# Additional BrainBeacon switches
+use_pos_emb: true
+use_density_emb: true
+density_token_idx: 2
+
+# Training/inference shared fields kept for compatibility
+batch_size: 16
+lr: 1.0e-5
+warmup: 1000
+max_epoch: 100
+total_steps: 100000
+root_path: /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST

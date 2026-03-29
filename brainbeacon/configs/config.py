@@ -1,4 +1,3 @@
-# config.py - Yifeng's version
 from typing import Optional
 
 specie_dict = {

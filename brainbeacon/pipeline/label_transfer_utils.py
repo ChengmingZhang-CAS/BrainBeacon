@@ -14,7 +14,7 @@ import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # for reproducibility with FAISS + CUDA
 
 from typing import Literal
-from brainbeacon.utils import ensure_ensembl_ids
+from brainbeacon.tokenizer import ensure_ensembl_ids
 from typing import Dict, List, Optional
 
 
