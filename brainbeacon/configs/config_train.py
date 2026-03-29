@@ -1,3 +1,4 @@
+# config_train.py - Yifeng's version
 platform_prob = {
     11: 0.8268,
     7: 0.1327,

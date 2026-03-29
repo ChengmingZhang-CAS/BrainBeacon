@@ -1,3 +1,4 @@
+# brain_beacon.py - Yifeng's version
 import numpy as np
 import torch
 import torch.nn as nn
