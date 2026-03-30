@@ -398,43 +398,85 @@ def plot_all_metric_comparisons(
     kind: Optional[str] = None,
     rotation: float = 45,
     prefix: str = "",
+    split_by: Optional[str] = "label_key",
 ):
     """
-    Plot each metric as a separate figure.
+    Plot each metric as a separate figure, optionally split by one column
+    (for example, label_key).
 
     Parameters
     ----------
     results_df : pd.DataFrame
         Benchmark results.
-    metrics : list[str]
+    metrics : Sequence[str]
         Metrics to plot.
     output_dir : str or None
         If provided, save each plot to output_dir.
+    x : str
+        Group column on x-axis.
+    kind : str or None
+        'bar' or 'box'. If None, infer automatically within each subset.
+    rotation : float
+        X tick label rotation.
+    prefix : str
+        Filename prefix.
+    split_by : str or None
+        Column used to split figures. If None, all rows are plotted together.
     """
     figures = []
 
-    if kind is None:
-        if "slice" in results_df.columns and results_df["slice"].nunique() > 1:
-            kind = "box"
-        else:
-            kind = "bar"
+    metrics = [metric for metric in metrics if metric in results_df.columns]
+    if len(metrics) == 0:
+        raise ValueError("No valid metrics found in results_df.")
 
-    for metric in metrics:
-        save_path = None
-        if output_dir is not None:
-            os.makedirs(output_dir, exist_ok=True)
-            filename = f"{prefix}{metric}_{kind}_by_{x}.png"
-            save_path = os.path.join(output_dir, filename)
+    if x not in results_df.columns:
+        raise KeyError(f"{x} not found in results_df.columns.")
 
-        fig, ax = plot_metric_comparison(
-            results_df=results_df,
-            metric=metric,
-            x=x,
-            kind=kind,
-            rotation=rotation,
-            save_path=save_path,
-        )
-        figures.append((metric, fig, ax))
+    if split_by is not None and split_by not in results_df.columns:
+        raise KeyError(f"{split_by} not found in results_df.columns.")
+
+    if split_by is None:
+        grouped_data = [("all", results_df.copy())]
+    else:
+        grouped_data = []
+        for group_name, subdf in results_df.groupby(split_by, sort=False):
+            subdf = subdf.copy()
+            if len(subdf) > 0:
+                grouped_data.append((str(group_name), subdf))
+
+    for group_name, subdf in grouped_data:
+        current_kind = kind
+        if current_kind is None:
+            if "slice" in subdf.columns and subdf["slice"].nunique() > 1:
+                current_kind = "box"
+            elif "slice_id" in subdf.columns and subdf["slice_id"].nunique() > 1:
+                current_kind = "box"
+            else:
+                current_kind = "bar"
+
+        for metric in metrics:
+            save_path = None
+            if output_dir is not None:
+                os.makedirs(output_dir, exist_ok=True)
+                if split_by is None:
+                    filename = f"{prefix}{metric}_{current_kind}_by_{x}.png"
+                else:
+                    safe_group_name = str(group_name).replace("/", "_").replace(" ", "_")
+                    filename = f"{prefix}{safe_group_name}_{metric}_{current_kind}_by_{x}.png"
+                save_path = os.path.join(output_dir, filename)
+
+            title = f"{metric} by {x}" if split_by is None else f"{group_name}: {metric} by {x}"
+
+            fig, ax = plot_metric_comparison(
+                results_df=subdf,
+                metric=metric,
+                x=x,
+                kind=current_kind,
+                title=title,
+                rotation=rotation,
+                save_path=save_path,
+            )
+            figures.append((group_name, metric, fig, ax))
 
     return figures
 

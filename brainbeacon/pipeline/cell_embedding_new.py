@@ -5,6 +5,7 @@ import joblib
 import shutil
 import torch.nn as nn
 import numpy as np
+import scanpy as sc
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
@@ -12,7 +13,7 @@ from typing import Union, List
 
 from brainbeacon.brain_beacon import BrainBeacon
 from brainbeacon.configs.stage1_config import stage1_config
-
+from brainbeacon.tokenizer import set_seed
 
 def normalize_brainbeacon_model_config(model_config: dict) -> dict:
     """Normalize legacy and current BrainBeacon config keys for inference."""
@@ -785,8 +786,8 @@ def run_bbcellformer_recon(
         'mask_type': mask_type,
         # "use_hidden_pe": False,
         "use_hidden_pe": True,
-        "pe_type": 'sin',
-        # "pe_type": 'fourier',
+        # "pe_type": 'sin',
+        "pe_type": 'fourier',
         # 'mask_type': 'input',
     }
     # clear GPU memory before re-initializing the pipeline
@@ -982,9 +983,6 @@ def run_bbcellformer_pipeline(
         Intermediate files (tokenization outputs, BB embeddings, final embeddings/model)
         are saved under ``output_dir`` with the given ``output_prefix``.
     """
-    import scanpy as sc
-
-    from brainbeacon.tokenizer import set_seed
 
     # ====== 1. Setup ======
     os.makedirs(output_dir, exist_ok=True)
@@ -996,7 +994,7 @@ def run_bbcellformer_pipeline(
     if stage1_config is None:
         raise ValueError("`config_train` must be imported.")
 
-    stage1_config.update({
+    config_train.update({
         "weight_mode": weight_mode,
         "cd_weight": cd_weight,
         "masking_p": 0,
@@ -1008,7 +1006,7 @@ def run_bbcellformer_pipeline(
         # "use_esm_emb": True,
     })
     if config_override:
-        stage1_config.update(config_override)
+        config_train.update(config_override)
 
     # ====== 2. Load AnnData ======
     adata = sc.read_h5ad(adata_path)
@@ -1038,7 +1036,164 @@ def run_bbcellformer_pipeline(
         bb_emb = run_bb_inference(
             adata=adata,
             token_data_path=token_data_path,
-            config_train=stage1_config,
+            config_train=config_train,
+            pretrain_ckpt=stage1_ckpt_path,
+            device=device,
+            save_path=bb_embedding_path
+        )
+        end_time = time.time()
+        print(f"BB inference complete. Saved to: {bb_embedding_path}")
+        print(f"[BB inference] Time cost: {(end_time - start_time):.2f} sec")
+    # adata.obsm["bb_emb"] = bb_emb
+
+    # ====== 5. CellFormer Reconstruction ======
+    if save_embedding_path is None:
+        save_embedding_path = os.path.join(output_dir, f"{output_prefix}_embeddings.npz")
+    if save_model and save_model_path is None:
+        save_model_path = os.path.join(output_dir, f"{output_prefix}_cellformer.pt")
+
+    adata = run_bbcellformer_recon(
+        adata=adata,
+        bb_embedding_path=bb_embedding_path,
+        bb_pretrain_path=stage1_ckpt_path,
+        cellformer_version="cellformer",
+        path_dict = path_dict,
+        cellformer_directory=os.path.dirname(stage2_ckpt_path),
+        device=device,
+        cellformer_pretrain_path=stage2_ckpt_path,
+        use_batch=use_batch,
+        use_spatial=use_spatial,
+        do_fit=do_fit,
+        slice_sample=slice_sample,
+        fit_epochs=fit_epochs,
+        enc_mod=enc_mod,
+        mask_type=mask_type,  # 'hidden' or 'input'
+        output_attentions=output_attentions,  # whether to return attention weights
+        save_embedding_path=save_embedding_path,
+        save_model_path=save_model_path,
+    )
+
+    return adata
+
+def run_brainbeacon_pipeline(
+    adata_path: str,
+    species: str,
+    assay: str,
+    gene_dict_path: str,
+    stage1_ckpt_path: str,
+    stage2_ckpt_path: str,
+    output_dir: str,
+    output_prefix: str,
+    stage1_config: dict | None = None,
+    stage2_config: dict | None = None,
+    device=None,
+    seed: int = 42,
+    deterministic: bool = True,
+):
+    """
+    Run the full BrainBeacon two-stage pipeline.
+
+    This is the top-level user-facing function for the BrainBeacon workflow.
+    The pipeline is organized into several major steps:
+
+    1. Data loading
+    2. Stage 1 tokenization
+    3. Stage 1 intra-cell representation inference
+    4. Stage 2 inter-cell modeling, including fitting and inference
+    5. Output saving
+
+    Parameters
+    ----------
+    adata_path : str
+        Path to the input AnnData file.
+    species : str
+        Species name used in preprocessing and tokenization.
+    assay : str
+        Assay or platform name associated with the input data.
+    gene_dict_path : str
+        Path to the gene dictionary file required by Stage 1 tokenization.
+    stage1_ckpt_path : str
+        Path to the pretrained checkpoint used in Stage 1.
+    stage2_ckpt_path : str
+        Path to the pretrained checkpoint used in Stage 2.
+    output_dir : str
+        Directory used to save intermediate files and final outputs.
+    output_prefix : str
+        Prefix used when naming output files.
+    stage1_config : dict or None, optional
+        Configuration dictionary for Stage 1. This typically contains
+        sub-configurations such as tokenization and inference.
+    stage2_config : dict or None, optional
+        Configuration dictionary for Stage 2. This typically contains
+        sub-configurations such as model settings, fitting, inference,
+        and output behavior.
+    device : torch.device or str or None, optional
+        Device used for computation. If None, an available default device
+        will be selected automatically.
+    seed : int, default=42
+        Random seed used for reproducibility.
+    deterministic : bool, default=True
+        Whether to enable deterministic execution when supported.
+
+    Returns
+    -------
+    adata : anndata.AnnData
+        Output AnnData object after completing the full pipeline.
+    """
+
+    # ====== 1. Setup ======
+    os.makedirs(output_dir, exist_ok=True)
+    if seed is not None:
+        set_seed(seed, deterministic=deterministic)
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ====== 2. Load AnnData ======
+    adata = sc.read_h5ad(adata_path)
+    adata.obs["species"] = species
+    adata.obs["platform"] = assay
+
+    # ====== 3. Tokenization ======
+    if config_train is None:
+        raise ValueError("`config_train` must be imported.")
+
+    config_train.update({
+        "weight_mode": weight_mode,
+        "cd_weight": cd_weight,
+        "masking_p": 0,
+        "batch_size": 64,
+        "expr_mode": None,
+        # "use_gene_id_emb": True,
+        # "use_homo_emb": True,
+        # "use_rna_type_emb": True,
+        # "use_esm_emb": True,
+    })
+    if config_override:
+        config_train.update(config_override)
+    bb_token_dir = os.path.join(output_dir, f"{output_prefix}_bb_token_dir")
+    token_data_path = run_tokenization(
+        adata_path=adata_path,
+        bb_token_dir=bb_token_dir,
+        gene_dict_path=gene_dict_path,
+        specie=specie,
+        assay=assay,
+        use_hvg=use_hvg,
+        n_hvg=n_hvg,
+        force_tokenize=force_tokenize,
+        use_dev_abs=use_dev_abs,
+    )
+
+    # ====== 4. BrainBeacon Inference ======
+    bb_embedding_path = os.path.join(output_dir, f"{output_prefix}_bb_embeddings.npz")
+    if os.path.exists(bb_embedding_path) and not force_tokenize:
+        print(f"Skipping BB inference. Found existing file: {bb_embedding_path}")
+    else:
+        start_time = time.time()
+        print(f"[BB inference] Start...")
+        bb_emb = run_bb_inference(
+            adata=adata,
+            token_data_path=token_data_path,
+            config_train=config_train,
             pretrain_ckpt=stage1_ckpt_path,
             device=device,
             save_path=bb_embedding_path

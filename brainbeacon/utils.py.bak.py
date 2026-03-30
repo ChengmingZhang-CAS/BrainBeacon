@@ -25,7 +25,7 @@ from brainbeacon.configs.config import technology_dict
 from brainbeacon.configs.config import MAX_LENGTH
 from brainbeacon.configs.config import AUX_TOKEN
 from brainbeacon.configs.config import cell_density_bin_dict
-from brainbeacon.configs.config_train import config_train
+from brainbeacon.configs.stage1_config import config_train
 
 config_train["single_context_length"] = config_train["context_length"]
 

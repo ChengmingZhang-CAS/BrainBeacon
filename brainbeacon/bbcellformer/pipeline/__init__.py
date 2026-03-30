@@ -10,8 +10,8 @@ import warnings
 import scanpy as sc
 from importlib.resources import files
 from brainbeacon.configs.config import resolve_path
-from brainbeacon.configs.config_train import config_train
-
+from brainbeacon.configs.stage1_config import stage1_config
+config_train = stage1_config
 
 def extract_input_embeddings(
         bb_pretrain_path: str,

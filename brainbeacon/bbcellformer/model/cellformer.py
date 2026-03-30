@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import numpy as np
-from brainbeacon.configs.config_train import config_train
+from brainbeacon.configs.stage1_config import stage1_config
 from ..embedder import OmicsEmbeddingLayer
 from ..utils.mask import MaskBuilder, NullMaskBuilder, HiddenMaskBuilder
 from ..encoder import setup_encoder
@@ -10,6 +10,7 @@ from ..latent import LatentModel, PreLatentNorm
 from ..objective import Objectives
 from ..head import setup_head
 
+config_train = stage1_config
 # Modified from CellPLM (https://github.com/OmicsML/CellPLM) for BrainBeacon integration.
 class OmicsFormer(nn.Module):
     def __init__(self, gene_list, enc_mod, enc_hid, enc_layers, post_latent_dim, dec_mod, dec_hid, dec_layers,
