@@ -7,7 +7,8 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 from copy import deepcopy
 from ..utils.eval import downstream_eval, aggregate_eval_results, imputation_eval
-from ..utils.data import XDict, TranscriptomicDataset, make_spatial_patches
+from ..utils.data import XDict, TranscriptomicDataset, make_spatial_neighbors
+from ..utils.mask import sample_knn_neighbors, build_spatial_cell_idx
 from typing import List, Literal, Union
 from .experimental import symbol_to_ensembl
 from torch.utils.data import DataLoader
@@ -36,7 +37,7 @@ ReconstructDefaultPipelineConfig = {
     'workers': 0,
 }
 
-def inference(model, dataloader, split, device, batch_size, order_required=False, use_patch=False, halo_ratio=0.2, output_attentions=False):
+def inference(model, dataloader, split, device, batch_size, order_required=False, use_knn=False, knn_k=10, output_attentions=False):
     if order_required and split:
         warnings.warn('When cell order required to be preserved, dataset split will be ignored.')
 
@@ -55,12 +56,17 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                 idx = torch.tensor(np.where(split_mask)[0])
             else:
                 idx = torch.arange(data_dict['x_seq'].shape[0])
-            if use_patch and len(idx) > batch_size:
+            if use_knn and len(idx) > batch_size:
                 coord = data_dict['coord'][idx]  # or data_dict['spatial'][idx]
-                patch_list, grid_info = make_spatial_patches(
+                patch_list = make_spatial_neighbors(
                     coord=coord,
-                    target_cells_per_patch=batch_size,
-                    halo_ratio=halo_ratio,
+                    max_full_size=batch_size,
+                    knn_k=knn_k,
+                    # center_ratio=None,  # center
+                    # truncate_context=False,
+                    center_ratio=0.5,
+                    truncate_context=True,
+                    min_context_per_center=1,
                 )
 
                 for patch in patch_list:
@@ -243,7 +249,7 @@ class ReconstructPipeline(Pipeline):
             if config['scheduler'] == 'plat':
                 scheduler.step(train_loss[-1])
             result_dict = inference(self.model, dataloader, valid_split, device,
-                                    config['max_eval_batch_size'], use_patch=False)
+                                    config['max_eval_batch_size'], use_knn=False, knn_k=5)
             valid_loss.append(result_dict['loss'])
 
             print(f'Epoch {epoch} | Train loss: {train_loss[-1]:.4f} | Valid loss: {valid_loss[-1]:.4f}')
@@ -278,7 +284,7 @@ class ReconstructPipeline(Pipeline):
         dataset = TranscriptomicDataset(adata, None, order_required=True)
         dataloader = DataLoader(dataset, batch_size=None, shuffle=False, num_workers=0)
         output = inference(self.model, dataloader, None, device, config['max_eval_batch_size'],
-                           order_required=True, use_patch=config['use_patch'], halo_ratio=0.2, output_attentions=output_attentions)
+                           order_required=True, use_knn=True, knn_k=5, output_attentions=output_attentions)
         pred = output['pred']
         latent = output['latent']
         # Ensure target_genes is defined

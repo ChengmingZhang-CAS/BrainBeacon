@@ -16,8 +16,8 @@ class OmicsFormer(nn.Module):
     def __init__(self, gene_list, enc_mod, enc_hid, enc_layers, post_latent_dim, dec_mod, dec_hid, dec_layers,
                  out_dim, batch_num=0, dataset_num=0, platform_num=0, mask_type='hidden', model_dropout=0.1,
                  activation='gelu', norm='layernorm', enc_head=8, mask_node_rate=0.5,
-                 mask_feature_rate=0.8, drop_node_rate=0., max_batch_size=2000, use_spatial_patch=True, center_ratio=0.8,
-                 cat_dim=None, conti_dim=None,
+                 mask_feature_rate=0.8, drop_node_rate=0., max_batch_size=2000, sampling_mode="spatial",
+                 center_ratio=0.5, knn_k=10, cat_dim=None, conti_dim=None,
                  pe_type='fourier', cat_pe=True, use_hidden_pe=True,
                  gene_emb=None, latent_mod='vae', w_li=1., w_en=1., w_ce=1.,
                  head_type=None, dsbn=False, ecs=False, dar=False, input_covariate=False,
@@ -45,7 +45,7 @@ class OmicsFormer(nn.Module):
                 self.mask_model = MaskBuilder(mask_node_rate, mask_feature_rate, drop_node_rate, max_batch_size, mask_beta)
             elif mask_type == 'hidden':
                 self.mask_model = HiddenMaskBuilder(mask_node_rate, mask_feature_rate, drop_node_rate, max_batch_size,
-                                                    use_spatial_patch, center_ratio)
+                                                    sampling_mode=sampling_mode, center_ratio=center_ratio, knn_k=knn_k)
             else:
                 raise NotImplementedError(f"Only support mask_type in ['input', 'hidden'], but got {mask_type}")
         else:

@@ -421,9 +421,14 @@ def make_spatial_patches(
     coord,
     target_cells_per_patch=2000,
     halo_ratio=0.2,
+    min_center_ratio=0.2,
+    min_center_cells=32,
 ):
     """
-    Build spatial patches for one slice.
+    Build spatial patches for one slice using:
+    1) initial grid-based center partition
+    2) merge tiny center patches at the center level
+    3) recompute halo/full patch after merging
 
     Parameters
     ----------
@@ -431,8 +436,14 @@ def make_spatial_patches(
         Cell coordinates with shape [n_cells, 2].
     target_cells_per_patch : int, default=2000
         Target number of center cells per patch.
-    halo_ratio : float, default=0.1
-        Relative padding ratio added to each side of the center patch.
+    halo_ratio : float, default=0.2
+        Relative padding ratio added to each side of the merged center bbox.
+    min_center_ratio : float, default=0.2
+        Minimum center size ratio relative to target_cells_per_patch.
+        Example: if target_cells_per_patch=1000 and min_center_ratio=0.2,
+        then patches with center size < 200 will be merged.
+    min_center_cells : int, default=32
+        Absolute lower bound for small center patches.
 
     Returns
     -------
@@ -449,12 +460,17 @@ def make_spatial_patches(
     assert coord.shape[0] > 0
     assert target_cells_per_patch >= 1
     assert halo_ratio >= 0
+    assert min_center_ratio >= 0
+    assert min_center_cells >= 1
 
     coord = coord.detach().cpu()
     x = coord[:, 0]
     y = coord[:, 1]
-
     n_cells = coord.shape[0]
+
+    # ------------------------------------------------------------------
+    # 1) Determine grid size
+    # ------------------------------------------------------------------
     n_patches_target = max(1, math.ceil(n_cells / target_cells_per_patch))
 
     x_min = x.min().item()
@@ -472,17 +488,17 @@ def make_spatial_patches(
     patch_w = x_range / n_x
     patch_h = y_range / n_y
 
-    # Assign each cell to one center grid
+    # ------------------------------------------------------------------
+    # 2) Assign cells to initial center grids
+    # ------------------------------------------------------------------
     grid_x = torch.floor((x - x_min) / patch_w).long()
     grid_y = torch.floor((y - y_min) / patch_h).long()
 
-    # Clamp boundary cells to the last bin
     grid_x = torch.clamp(grid_x, min=0, max=n_x - 1)
     grid_y = torch.clamp(grid_y, min=0, max=n_y - 1)
 
     linear_id = grid_x * n_y + grid_y
 
-    # Sort once, then group by patch id
     sort_idx = torch.argsort(linear_id)
     linear_id_sorted = linear_id[sort_idx]
 
@@ -492,21 +508,120 @@ def make_spatial_patches(
         counts.cumsum(0)[:-1]
     ])
 
-    patch_list = []
-
+    # Store initial center groups by grid id
+    groups = {}
     for uid, start, count in zip(unique_ids.tolist(), starts.tolist(), counts.tolist()):
         i = uid // n_y
         j = uid % n_y
-
         center_idx = sort_idx[start:start + count]
 
-        cx0 = x_min + i * patch_w
-        cx1 = x_min + (i + 1) * patch_w
-        cy0 = y_min + j * patch_h
-        cy1 = y_min + (j + 1) * patch_h
+        groups[(i, j)] = {
+            "grid_i": i,
+            "grid_j": j,
+            "center_idx": center_idx,
+        }
 
-        pad_x = (cx1 - cx0) * halo_ratio
-        pad_y = (cy1 - cy0) * halo_ratio
+    if len(groups) == 0:
+        raise RuntimeError("No spatial patch was constructed.")
+
+    # ------------------------------------------------------------------
+    # 3) Merge tiny center patches at center level
+    # ------------------------------------------------------------------
+    min_required = max(min_center_cells, int(target_cells_per_patch * min_center_ratio))
+
+    active_keys = set(groups.keys())
+    sorted_keys = sorted(active_keys)
+
+    def _group_size(key):
+        return groups[key]["center_idx"].numel()
+
+    def _group_centroid(key):
+        idx = groups[key]["center_idx"]
+        c = coord[idx].float().mean(dim=0)
+        return c
+
+    def _neighbor_keys(key):
+        """Return nearby grid neighbors: 4-neighborhood first, then diagonals."""
+        i, j = key
+        cand_4 = [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
+        cand_diag = [(i - 1, j - 1), (i - 1, j + 1), (i + 1, j - 1), (i + 1, j + 1)]
+
+        neigh_4 = [k for k in cand_4 if k in active_keys]
+        neigh_diag = [k for k in cand_diag if k in active_keys]
+        return neigh_4, neigh_diag
+
+    # We process from small to large, but do not merge into already removed keys.
+    changed = True
+    while changed:
+        changed = False
+
+        current_keys = sorted(active_keys, key=lambda k: _group_size(k))
+        for key in current_keys:
+            if key not in active_keys:
+                continue
+
+            size = _group_size(key)
+            if size >= min_required:
+                continue
+
+            neigh_4, neigh_diag = _neighbor_keys(key)
+            candidates = neigh_4 if len(neigh_4) > 0 else neigh_diag
+
+            # If there is no adjacent patch, keep it as is.
+            if len(candidates) == 0:
+                continue
+
+            # Prefer non-small neighbors first
+            large_candidates = [k for k in candidates if _group_size(k) >= min_required]
+            use_candidates = large_candidates if len(large_candidates) > 0 else candidates
+
+            # Among candidates, choose the one with the largest center size.
+            # If tied, choose the nearest centroid.
+            src_centroid = _group_centroid(key)
+
+            def _score(k):
+                size_score = _group_size(k)
+                dist_score = torch.sum((_group_centroid(k) - src_centroid) ** 2).item()
+                return (-size_score, dist_score)
+
+            target_key = sorted(use_candidates, key=_score)[0]
+
+            # Merge center_idx only; halo will be recomputed later.
+            merged_idx = torch.cat(
+                [groups[target_key]["center_idx"], groups[key]["center_idx"]],
+                dim=0
+            )
+            groups[target_key]["center_idx"] = merged_idx
+
+            # Remove small patch from active set
+            active_keys.remove(key)
+            changed = True
+
+    # ------------------------------------------------------------------
+    # 4) Build full patches from merged center patches
+    # ------------------------------------------------------------------
+    final_keys = sorted(active_keys)
+    patch_list = []
+
+    center_sizes = []
+    full_sizes = []
+    full_center_ratios = []
+
+    for key in final_keys:
+        center_idx = groups[key]["center_idx"]
+
+        center_coord = coord[center_idx]
+        cx0 = center_coord[:, 0].min().item()
+        cx1 = center_coord[:, 0].max().item()
+        cy0 = center_coord[:, 1].min().item()
+        cy1 = center_coord[:, 1].max().item()
+
+        # Use center bbox to define halo expansion
+        bw = max(cx1 - cx0, 1e-8)
+        bh = max(cy1 - cy0, 1e-8)
+
+        pad_x = bw * halo_ratio
+        pad_y = bh * halo_ratio
 
         fx0 = cx0 - pad_x
         fx1 = cx1 + pad_x
@@ -518,7 +633,7 @@ def make_spatial_patches(
 
         center_mask = torch.zeros(full_idx.shape[0], dtype=torch.bool)
 
-        # Map global cell index to local patch position
+        # Map global center index to local position in full_idx
         pos_map = {idx.item(): pos for pos, idx in enumerate(full_idx)}
         center_pos = [pos_map[idx.item()] for idx in center_idx]
         center_mask[torch.tensor(center_pos, dtype=torch.long)] = True
@@ -529,6 +644,15 @@ def make_spatial_patches(
             "center_mask": center_mask,
         })
 
+        csz = center_idx.numel()
+        fsz = full_idx.numel()
+        center_sizes.append(csz)
+        full_sizes.append(fsz)
+        full_center_ratios.append(fsz / max(csz, 1))
+
+    # ------------------------------------------------------------------
+    # 5) Debug info
+    # ------------------------------------------------------------------
     grid_info = {
         "n_cells": n_cells,
         "n_patches_target": n_patches_target,
@@ -538,6 +662,223 @@ def make_spatial_patches(
         "patch_w": patch_w,
         "patch_h": patch_h,
         "halo_ratio": halo_ratio,
+        "min_required_center_cells": min_required,
+        "center_cells_mean": float(sum(center_sizes) / len(center_sizes)),
+        "center_cells_min": int(min(center_sizes)),
+        "center_cells_max": int(max(center_sizes)),
+        "full_cells_mean": float(sum(full_sizes) / len(full_sizes)),
+        "full_cells_min": int(min(full_sizes)),
+        "full_cells_max": int(max(full_sizes)),
+        "full_center_ratio_mean": float(sum(full_center_ratios) / len(full_center_ratios)),
+        "full_center_ratio_min": float(min(full_center_ratios)),
+        "full_center_ratio_max": float(max(full_center_ratios)),
     }
 
     return patch_list, grid_info
+
+
+def make_spatial_neighbors(
+    coord,
+    max_full_size=2000,
+    knn_k=10,
+    center_ratio=None,
+    truncate_context=False,
+    min_context_per_center=1,
+):
+    """
+    Build neighbor-based batches with the same API as make_spatial_patches.
+
+    Parameters
+    ----------
+    coord : torch.Tensor
+        Spatial coordinates, shape [N, d].
+    max_full_size : int
+        Maximum number of nodes in one inference subgraph (center + context).
+    knn_k : int
+        Number of candidate neighbors for each center.
+    center_ratio : float or None
+        If None, use conservative mode:
+            n_center = max_full_size // (1 + knn_k)
+        If provided, use efficiency mode:
+            n_center = int(max_full_size * center_ratio)
+    truncate_context : bool
+        Whether to truncate context if union size exceeds max_full_size.
+    min_context_per_center : int
+        Minimum number of neighbors to preserve for each center when truncation is enabled.
+
+    Returns
+    -------
+    neighbor_list : list of dict
+        Each dict contains:
+            - 'full_idx': local node indices of current subgraph
+            - 'center_idx': local indices of centers inside full_idx
+            - 'center_mask': bool mask of centers inside full_idx
+    """
+    device = coord.device
+    N = coord.shape[0]
+
+    if N == 0:
+        return []
+    if max_full_size <= 0:
+        raise ValueError("max_full_size must be > 0")
+    if knn_k < 0:
+        raise ValueError("knn_k must be >= 0")
+    if min_context_per_center < 0:
+        raise ValueError("min_context_per_center must be >= 0")
+
+    if center_ratio is None:
+        n_center = max_full_size // max(1, 1 + knn_k)
+        n_center = max(1, n_center)
+    else:
+        n_center = int(max_full_size * center_ratio)
+        n_center = max(1, min(n_center, max_full_size))
+
+    neighbor_list = []
+
+    for start in range(0, N, n_center):
+        end = min(start + n_center, N)
+        center_idx = torch.arange(start, end, device=device)
+        n_cur_center = center_idx.numel()
+
+        # No room for context
+        if n_cur_center >= max_full_size:
+            center_idx = center_idx[:max_full_size]
+            full_idx = center_idx
+            center_local_idx = torch.arange(full_idx.numel(), device=device)
+            center_mask = torch.ones(full_idx.numel(), dtype=torch.bool, device=device)
+            neighbor_list.append(
+                {
+                    "full_idx": full_idx,
+                    "center_idx": center_local_idx,
+                    "center_mask": center_mask,
+                }
+            )
+            continue
+
+        # No neighbors needed / possible
+        if knn_k == 0 or N == 1:
+            full_idx = center_idx
+            center_local_idx = torch.arange(full_idx.numel(), device=device)
+            center_mask = torch.ones(full_idx.numel(), dtype=torch.bool, device=device)
+            neighbor_list.append(
+                {
+                    "full_idx": full_idx,
+                    "center_idx": center_local_idx,
+                    "center_mask": center_mask,
+                }
+            )
+            continue
+
+        # kNN candidates for each center
+        center_coord = coord[center_idx]                 # [C, d]
+        dist = torch.cdist(center_coord, coord)         # [C, N]
+
+        row_idx = torch.arange(n_cur_center, device=device)
+        dist[row_idx, center_idx] = float("inf")        # exclude self
+
+        k = min(knn_k, max(N - 1, 0))
+        if k == 0:
+            full_idx = center_idx
+            center_local_idx = torch.arange(full_idx.numel(), device=device)
+            center_mask = torch.ones(full_idx.numel(), dtype=torch.bool, device=device)
+            neighbor_list.append(
+                {
+                    "full_idx": full_idx,
+                    "center_idx": center_local_idx,
+                    "center_mask": center_mask,
+                }
+            )
+            continue
+
+        knn_idx = torch.topk(
+            dist,
+            k=k,
+            dim=1,
+            largest=False,
+        ).indices                                        # [C, k]
+
+        # Remove accidental overlap with centers
+        is_center = torch.isin(knn_idx, center_idx)
+        knn_idx = torch.where(is_center, torch.full_like(knn_idx, -1), knn_idx)
+
+        budget = max_full_size - n_cur_center
+        if budget <= 0:
+            full_idx = center_idx
+        else:
+            # ===== Fast path: direct union first =====
+            all_neighbor_idx = knn_idx[knn_idx >= 0]
+            if all_neighbor_idx.numel() > 0:
+                all_neighbor_idx = torch.unique(all_neighbor_idx)
+                is_center = torch.isin(all_neighbor_idx, center_idx)
+                all_neighbor_idx = all_neighbor_idx[~is_center]
+
+            if (not truncate_context) or (all_neighbor_idx.numel() <= budget):
+                # No truncation needed
+                if all_neighbor_idx.numel() > 0:
+                    full_idx = torch.cat([center_idx, all_neighbor_idx], dim=0)
+                else:
+                    full_idx = center_idx
+            else:
+                # ===== Truncation path: fair allocation =====
+                selected_neighbors = []
+                selected_set = set(center_idx.tolist())
+
+                # Step 1: guarantee minimum context per center
+                base_take = min(min_context_per_center, k)
+                for i in range(n_cur_center):
+                    taken = 0
+                    for j in range(k):
+                        nid = knn_idx[i, j].item()
+                        if nid < 0 or nid in selected_set:
+                            continue
+                        selected_neighbors.append(nid)
+                        selected_set.add(nid)
+                        taken += 1
+                        if len(selected_neighbors) >= budget or taken >= base_take:
+                            break
+                    if len(selected_neighbors) >= budget:
+                        break
+
+                # Step 2: round-robin fill remaining budget
+                if len(selected_neighbors) < budget:
+                    for j in range(k):
+                        for i in range(n_cur_center):
+                            nid = knn_idx[i, j].item()
+                            if nid < 0 or nid in selected_set:
+                                continue
+                            selected_neighbors.append(nid)
+                            selected_set.add(nid)
+                            if len(selected_neighbors) >= budget:
+                                break
+                        if len(selected_neighbors) >= budget:
+                            break
+
+                if len(selected_neighbors) > 0:
+                    neighbor_idx = torch.tensor(
+                        selected_neighbors,
+                        device=device,
+                        dtype=torch.long,
+                    )
+                    full_idx = torch.cat([center_idx, neighbor_idx], dim=0)
+                else:
+                    full_idx = center_idx
+
+        # Build global -> local map
+        idx_map = torch.full((N,), -1, device=device, dtype=torch.long)
+        idx_map[full_idx] = torch.arange(full_idx.numel(), device=device)
+
+        center_local_idx = idx_map[center_idx]
+        center_local_idx = center_local_idx[center_local_idx >= 0]
+
+        center_mask = torch.zeros(full_idx.numel(), dtype=torch.bool, device=device)
+        center_mask[center_local_idx] = True
+
+        neighbor_list.append(
+            {
+                "full_idx": full_idx,
+                "center_idx": center_idx,  # original center_idx
+                "center_mask": center_mask,
+            }
+        )
+
+    return neighbor_list

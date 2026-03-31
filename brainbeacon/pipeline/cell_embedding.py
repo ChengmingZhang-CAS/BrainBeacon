@@ -782,6 +782,9 @@ def run_bbcellformer_recon(
         'mask_node_rate': 0.95,
         'mask_feature_rate': 0.25,
         'max_batch_size': 2000,
+        'sampling_mode': "spatial", # random
+        'center_ratio': 0.5,
+        'knn_k': 10,
         'mask_type': mask_type,
         # "use_hidden_pe": False,
         "use_hidden_pe": True,
