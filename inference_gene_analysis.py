@@ -511,6 +511,13 @@ def run_gene_level_inference(
             connect_comp = connect_comp[0]                # (B, seq_len) 同源连通分量
             rna_type = rna_type[0]                        # (B, seq_len) RNA 类型
             neighbor_gene_distribution = neighbor_gene_distribution[0].long()  # (B, seq_len) 邻域偏差
+            # cell_raw_idx 解包: Dataset 返回 list[str] (长度 B),
+            # DataLoader collate 后变为 list[tuple[str]] 即 [('name1',), ('name2',), ...]
+            # 需要提取每个元素中的实际字符串
+            cell_raw_idx = [
+                item[0] if isinstance(item, (list, tuple)) else str(item)
+                for item in cell_raw_idx
+            ]
 
             # --- ESM embedding 查表 ---
             # 将每个 token_id 映射到对应的 5120 维 ESM2 蛋白质嵌入
