@@ -365,6 +365,22 @@ def run_gene_level_inference(
             n_mapped += 1
     print(f"Gene mapping: {n_mapped}/{len(token_to_gene)} dict genes mapped to adata "
           f"({p} adata genes)")
+    if n_mapped == 0:
+        raise RuntimeError(
+            f"No genes from gene_dict could be mapped to adata.var_names. "
+            f"Check naming convention: gene_dict uses names like "
+            f"'{next(iter(token_to_gene.values()), '?')}', "
+            f"adata uses names like '{adata.var_names[0] if p > 0 else '?'}'. "
+            f"Possible Ensembl ID vs gene symbol mismatch."
+        )
+    mapping_ratio = n_mapped / max(len(token_to_gene), 1)
+    if mapping_ratio < 0.01:
+        import warnings
+        warnings.warn(
+            f"Only {n_mapped}/{len(token_to_gene)} ({mapping_ratio:.1%}) genes mapped. "
+            f"Output will be mostly zeros. Check gene naming convention.",
+            stacklevel=2,
+        )
 
     # ------------------------------------------------------------------
     # Step 2: 初始化模型
@@ -451,6 +467,8 @@ def run_gene_level_inference(
     # (用于 group_by 模式下的均值计算)
     valid_acc = np.zeros((n_out, p), dtype=acc_dtype)
     cell_names_list: list[str] = []
+    n_skipped_no_group = 0  # group_by 模式下因 cell name 不匹配被跳过的 cell 数
+    first_skipped_cell_name: str | None = None  # 记录第一个被跳过的 cell name, 用于错误信息
 
     # 打印内存占用估算
     mem_mb = 0
@@ -559,7 +577,10 @@ def run_gene_level_inference(
                 if group_by is not None:
                     # group_by 模式: 查找 cell 所属的组
                     if cell_name not in cell_to_group:
-                        # cell 在 adata 中但没有分组信息, 跳过
+                        # cell 在 tokenized 数据中但名称与 adata.obs_names 不匹配, 跳过
+                        if first_skipped_cell_name is None:
+                            first_skipped_cell_name = cell_name
+                        n_skipped_no_group += 1
                         n_processed += 1
                         continue
                     out_idx = cell_to_group[cell_name]
@@ -638,6 +659,28 @@ def run_gene_level_inference(
                     valid_acc[out_idx][adata_cols] = 1.0
 
                 n_processed += 1
+
+    # ------------------------------------------------------------------
+    # Step 7.5: group_by 模式下的 cell name 匹配检查
+    # ------------------------------------------------------------------
+    if group_by is not None and n_processed > 0:
+        skip_ratio = n_skipped_no_group / n_processed
+        if n_skipped_no_group == n_processed:
+            raise RuntimeError(
+                f"All {n_processed} cells were skipped because their names in the "
+                f"tokenized dataset do not match adata.obs_names. "
+                f"Token cell name example: {first_skipped_cell_name!r}; "
+                f"adata.obs_names example: {adata.obs_names[0]!r}. "
+                f"Result would be all zeros."
+            )
+        if skip_ratio > 0.5:
+            import warnings
+            warnings.warn(
+                f"{n_skipped_no_group}/{n_processed} ({skip_ratio:.0%}) cells skipped "
+                f"due to cell name mismatch between tokenized data and adata.obs_names. "
+                f"Many groups may have zero values.",
+                stacklevel=2,
+            )
 
     # ------------------------------------------------------------------
     # Step 8: 清理资源
@@ -747,9 +790,20 @@ def print_summary(result: dict[str, Any]):
     print(f"  Genes (p):          {p}")
     print(f"  Output rows (n):    {n}")
     if "cell_counts" in result:
-        print(f"  Group sizes:        min={result['cell_counts'].min()}, "
-              f"max={result['cell_counts'].max()}, "
-              f"total={result['cell_counts'].sum()}")
+        counts = result["cell_counts"]
+        print(f"  Group sizes:        min={counts.min()}, "
+              f"max={counts.max()}, "
+              f"total={counts.sum()}")
+        empty_groups = int((counts == 0).sum())
+        if empty_groups > 0:
+            import warnings
+            empty_labels = result["labels"][counts == 0]
+            warnings.warn(
+                f"{empty_groups} group(s) have 0 cells and will be all zeros: "
+                f"{list(empty_labels[:5])}"
+                f"{'...' if empty_groups > 5 else ''}",
+                stacklevel=2,
+            )
     valid = result["valid_mask"]
     avg_valid = valid.sum(axis=1).mean()
     print(f"  Avg valid genes:    {avg_valid:.1f} / {p}")
