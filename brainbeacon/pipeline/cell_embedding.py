@@ -5,14 +5,28 @@ import joblib
 import shutil
 import torch.nn as nn
 import numpy as np
+import scanpy as sc
+import copy
+
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from typing import Union, List
 
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.configs.stage1_config import stage1_config
+from brainbeacon.tokenizer import set_seed
+from brainbeacon.configs.stage1_config import stage1_config as default_config1
+from brainbeacon.configs.stage2_config import stage2_config as default_config2
+from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
+from sklearn.preprocessing import LabelEncoder
+from ..bbcellformer.utils.data import SPATIAL_PLATFORM_LIST
 
+covariate_fields = ["platform"]
+platform_le = LabelEncoder()
+platform_le.fit(SPATIAL_PLATFORM_LIST)
+covariate_encoders = {
+    "platform": platform_le
+}
 
 def normalize_brainbeacon_model_config(model_config: dict) -> dict:
     """Normalize legacy and current BrainBeacon config keys for inference."""
@@ -591,9 +605,9 @@ class CellEmbeddingPipeline:
 
 def run_tokenization(
     adata_path,
-    bb_token_dir,
     gene_dict_path,
-    specie,
+    bb_token_dir,
+    species,
     assay,
     use_hvg=True,
     n_hvg=1000,
@@ -639,7 +653,7 @@ def run_tokenization(
     tokenization_h5ad(
         adata_path,
         gene_dict_path,
-        specie=specie,
+        species=species,
         assay=assay,
         output_path=bb_token_dir,
         use_hvg=use_hvg,
@@ -658,7 +672,7 @@ def run_tokenization(
     return bb_token_dir
 
 
-def run_bb_inference(
+def run_stage1_inference(
     adata,
     token_data_path,
     config_train,
@@ -714,54 +728,88 @@ def run_bb_inference(
     torch.cuda.empty_cache()
     return ordered_embeddings
 
+class DictEncoder:
+    def __init__(self, mapping):
+        self.mapping = mapping
 
-def run_bbcellformer_recon(
-    adata,
-    bb_embedding_path,            # path to .npz embedding file
-    bb_pretrain_path,             # path to BB encoder backbone weights
-    cellformer_version,          # prefix like 'cellformer', used to find .yaml/.pt
-    cellformer_directory,        # path to folder with pretrained CellFormer model_raw files
-    device,
-    cellformer_pretrain_path=None,  # Not used here, but required by the pipeline
-    use_batch=True,
-    use_spatial=True,
-    do_fit=True,
-    fit_epochs=500,  # can be set in the pipeline
-    slice_sample=False,  # NEW
-    enc_mod="flowformer",
-    path_dict: dict = None,
-    mask_type="hidden",  # 'hidden' or 'input'
-    output_attentions=False,  # whether to return attention weights
-    save_embedding_path=None,  # Optional now
-    save_model_path=None,  # optional: save .pt model_raw weights
+    def transform(self, values):
+        return np.asarray([self.mapping[v] for v in values], dtype=np.int64)
+
+
+class DictEncoder:
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def transform(self, values):
+        return np.asarray([self.mapping[v] for v in values], dtype=np.int64)
+
+
+class IdentityEncoder:
+    def transform(self, values):
+        return np.asarray(values, dtype=np.int64)
+
+
+def build_covariate_encoders(config):
+    cov_fields = config.get("covariate_fields")
+
+    if not cov_fields:
+        return None
+
+    encoders = {}
+
+    if "platform" in cov_fields:
+        PLATFORM_MAP = {
+            "merfish": 0,
+            "xenium": 1,
+            "starmap": 2,
+            "slideseqv2": 3,
+            "stereo": 4,
+        }
+        encoders["platform"] = DictEncoder(PLATFORM_MAP)
+
+    if "slice_index" in cov_fields:
+        encoders["slice_index"] = IdentityEncoder()
+
+    if "dataset_index" in cov_fields:
+        encoders["dataset_index"] = IdentityEncoder()
+
+    return encoders
+
+
+def run_stage2_pipeline(
+        adata,
+        stage1_ckpt_path,
+        stage2_ckpt_path=None,
+        config=None,
+        do_fit=True,
+        fit_epochs=500,
+        use_single_slice=False,
+        use_batch=True,
+        use_spatial=True,
+        save_model_path=None,
+        save_embedding_path=None,
+        device=None,
 ):
-    from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 
     # Load AnnData file
     data = adata.copy()
     data.obs_names_make_unique()
     # set train/valid split
-    np.random.seed(42)
     data.obs['valid_split'] = 'train'
     if 'slice' not in data.obs.columns:
         data.obs['slice'] = 'default'
-    for batch_id in data.obs['slice'].unique():
-        idx = data.obs['slice'] == batch_id
+    for slice_id in data.obs['slice'].unique():
+        idx = data.obs['slice'] == slice_id
         cell_idx = np.where(idx)[0]
         n_valid = max(1, int(len(cell_idx) * 0.1))  # Ensure at least one cell is selected for validation
         valid_cells = np.random.choice(cell_idx, n_valid, replace=False)
         data.obs.iloc[valid_cells, data.obs.columns.get_loc('valid_split')] = 'valid'
-
-    # load brainbeacon embeddings
-    data.obsm['bb_emb'] = np.load(bb_embedding_path)['embeddings']
 
     # Add batch info if enabled
     if use_batch:
         data.obs['batch'] = data.obs['slice']
 
     if use_spatial and "spatial" in data.obsm.keys():
-        all_coords = []
-
         for batch_id in data.obs['batch'].unique():
             idx = data.obs['batch'] == batch_id
             spatial = data.obsm['spatial'][idx]
@@ -773,44 +821,23 @@ def run_bbcellformer_recon(
             data.obs.loc[idx, 'x_FOV_px'] = normalized[:, 0]
             data.obs.loc[idx, 'y_FOV_px'] = normalized[:, 1]
 
-    # Initialize cellformer embedding pipeline
-    overwrite_config = {
-        "name": f"bb_{enc_mod}",
-        "enc_mod": enc_mod,
-        'objective': 'nb',
-        # 'objective': 'imputation',
-        'mask_node_rate': 0.95,
-        'mask_feature_rate': 0.25,
-        'max_batch_size': 2000,
-        'sampling_mode': "spatial", # random
-        'center_ratio': 0.5,
-        'knn_k': 10,
-        'mask_type': mask_type,
-        # "use_hidden_pe": False,
-        "use_hidden_pe": True,
-        "pe_type": 'sin',
-        # "pe_type": 'fourier',
-        # 'mask_type': 'input',
-    }
     # clear GPU memory before re-initializing the pipeline
     torch.cuda.empty_cache()
     pipeline = ReconstructPipeline(
-        pretrain_prefix=cellformer_version,
-        overwrite_config=overwrite_config,
-        pretrain_directory=cellformer_directory,
-        bb_pretrain_path=bb_pretrain_path,
-        cellformer_pretrain_path=cellformer_pretrain_path,
-        path_dict=path_dict,
-        use_pretrain=True)
+        config=config,
+        stage1_ckpt_path=stage1_ckpt_path,
+        stage2_ckpt_path=stage2_ckpt_path,
+        use_pretrain=config.get("use_pretrain", True),
+    )
     if do_fit:
         # Only sample one slice if requested
-        if slice_sample:
+        if use_single_slice:
             # np.random.seed(42)
-            rng = np.random.RandomState(None)  # 使用局部随机性，每次运行都不一样
+            rng = np.random.RandomState(None)  # use local random
             chosen_slice = rng.choice(data.obs['slice'].unique())
             fit_data = data[data.obs['slice'] == chosen_slice].copy()
             print(f"Training only on slice: {chosen_slice} ({fit_data.n_obs} cells)")
-            MAX_CELLS = 20000
+            MAX_CELLS = 50000
             if fit_data.n_obs > MAX_CELLS:
                 print(f"[Warning] Too many cells in slice ({fit_data.n_obs}), subsampling to {MAX_CELLS}")
                 sampled_indices = np.random.choice(fit_data.n_obs, MAX_CELLS, replace=False)
@@ -819,42 +846,54 @@ def run_bbcellformer_recon(
 
         else:
             fit_data = data.copy()
+
+        covariate_fields = config.get("covariate_fields", None)
+        if covariate_fields is not None:
+            if "slice_index" in covariate_fields and "slice_index" not in fit_data.obs.columns:
+                fit_data.obs["slice_index"] = 0
+            if "dataset_index" in covariate_fields and "dataset_index" not in fit_data.obs.columns:
+                fit_data.obs["dataset_index"] = 0
+
+        covariate_encoders = build_covariate_encoders(config)
+        train_config = {
+            'epochs': fit_epochs,
+            'max_batch_size': config['max_batch_size'],
+            'use_patch': config.get("use_patch", True),
+            'knn_k': config.get("knn_k", 10),
+        }
         pipeline.fit(
             fit_data,  # AnnData object
-            train_config={'epochs': fit_epochs, "use_patch": False},
+            config_override=train_config,
             split_field='valid_split',
             train_split='train',
             valid_split='valid',
+            covariate_fields=covariate_fields,
+            covariate_encoders=covariate_encoders,
             device=device
         )
     inference_config = {
-        'lr': 5e-4,
-        'wd': 1e-6,
-        'scheduler': 'plat',
-        'epochs': 100,
-        'max_eval_batch_size': 1000,
-        'use_patch': False,
-        # 'use_patch': True,
-        'patience': 5,
-        'workers': 0,
+        'max_eval_batch_size': config['max_eval_batch_size'],
+        'use_patch': config.get("eval_use_patch", True),
+        'knn_k': config.get("eval_knn_k", 5),
+        'center_ratio': config.get("eval_center_ratio", 0.5),
     }
     result = pipeline.predict(
         data,
         inference_config=inference_config,
-        output_attentions=output_attentions,
+        # output_attentions=output_attentions,
         device=device
     )
     pred = result['pred']
     latent = result['latent']
-    attention = result.get('attention', None)
+    # attention = result.get('attention', None)
 
     target_genes = pipeline.target_genes  # this was set inside predict()
     data = data[:, target_genes].copy()  # now data.var.index == target_genes
 
     data.obsm['X_emb'] = latent.cpu().numpy()  # Store embeddings in AnnData object
     data.obsm['X_pred'] = pred.cpu().numpy()  # Store predicted gene
-    if output_attentions and attention is not None:
-        data.uns['attention'] = attention.cpu().numpy()
+    # if output_attentions and attention is not None:
+    #     data.uns['attention'] = attention.cpu().numpy()
 
     if save_model_path is not None:
         torch.save(pipeline.model.state_dict(), save_model_path)
@@ -866,216 +905,184 @@ def run_bbcellformer_recon(
 
     return data
 
-def run_bbcellformer_pipeline(
+
+def merge_config(default_config: dict, new_config: dict | None = None) -> dict:
+    """
+    Merge a user-provided config into the default config.
+    """
+    config = copy.deepcopy(default_config)
+    if new_config is not None:
+        config.update(new_config)
+    return config
+
+
+def run_brainbeacon_pipeline(
     adata_path: str,
-    specie: str,
+    species: str,
     assay: str,
     gene_dict_path: str,
     stage1_ckpt_path: str,
     stage2_ckpt_path: str,
     output_dir: str,
     output_prefix: str,
-    path_dict: dict = None,
-    config_override: dict = None,
-    n_hvg: int = 1000,
-    cd_weight: float = 0.02,
-    use_hvg: bool = True,
-    use_batch: bool = True,
-    use_spatial: bool = True,
-    weight_mode: str = "expression",
-    force_tokenize: bool = True,
-    use_dev_abs: bool = False,
+    stage1_config: dict | None = None,
+    stage2_config: dict | None = None,
     do_fit: bool = True,
     fit_epochs: int = 100,
-    slice_sample=False,  # select one slice for training
-    enc_mod="flowformer",
-    mask_type="hidden",  # 'hidden' or 'input'
-    output_attentions=False,  # whether to return attention weights
-    save_model: bool = True,  # whether to save the model_raw
-    save_model_path: str = None,
-    save_embedding_path: str = None,
+    use_single_slice: bool = False,
     device=None,
     seed: int = 42,
-    deterministic: bool = True
+    deterministic: bool = True,
+    save_model: bool = True,
+    save_model_path: str | None = None,
 ):
-    """Run the end-to-end BrainBeacon + CellFormer pipeline and return an updated AnnData.
+    """
+    Run the full two-stage BrainBeacon pipeline.
 
-    This function performs:
-    1) Load AnnData from ``adata_path`` and set ``adata.obs["platform"] = assay``.
-    2) Tokenization (BrainBeacon tokenizer) and save token files under ``output_dir``.
-    3) BrainBeacon inference to produce cell embeddings (saved as ``*_bb_embeddings.npz``).
-    4) CellFormer reconstruction / fitting and save final embeddings and model (optional).
+    This is the top-level user-facing function for the BrainBeacon workflow.
+    The pipeline contains two stages:
+
+    Stage 1 (intra-cell modeling):
+        1. Tokenize gene expression into sequence-like model inputs.
+        2. Run pretrained BrainBeacon inference to generate cell-level embeddings.
+
+    Stage 2 (inter-cell modeling):
+        1. Perform CellFormer-based spatial / inter-cell modeling.
+        2. Optionally fit or fine-tune the stage 2 model.
+        3. Generate refined latent representations.
 
     Parameters
     ----------
     adata_path : str
-        Path to the input AnnData (``.h5ad``).
-    specie : str
-        Species name used in tokenization (e.g., ``"human"``, ``"mouse"``).
+        Path to the input AnnData file.
+    species : str
+        Species identifier used for tokenization and metadata assignment.
     assay : str
-        Platform / assay name. Will be stored to ``adata.obs["platform"]``.
+        Assay / platform name stored in ``adata.obs["platform"]``.
     gene_dict_path : str
-        Path to the BrainBeacon gene dictionary (``.h5ad``).
+        Path to the gene dictionary used by stage 1 tokenization.
     stage1_ckpt_path : str
-        Path to BrainBeacon pretrained checkpoint.
+        Path to the pretrained stage 1 BrainBeacon checkpoint.
     stage2_ckpt_path : str
-        Path to CellPLM/CellFormer pretrained checkpoint.
+        Path to the pretrained stage 2 CellFormer checkpoint.
     output_dir : str
-        Output directory for intermediate files and results.
+        Directory used to save intermediate outputs and final artifacts.
     output_prefix : str
         Prefix used to name output files.
-
-    path_dict : dict, optional
-        Optional path configuration passed to downstream reconstruction.
-    config_train : dict
-        Training/inference configuration. Must be provided.
-        This function will update it with internal defaults (e.g., ``weight_mode``, ``cd_weight``).
-    config_override : dict, optional
-        Optional overrides merged into ``config_train`` after defaults are set.
-
-    n_hvg : int, default 1000
-        Number of HVGs to use if ``use_hvg=True``.
-    cd_weight : float, default 0.02
-        Cell-density token weight used by expression-weighted pooling.
-    use_hvg : bool, default True
-        Whether to perform HVG selection in tokenization.
-    use_batch : bool, default True
-        Whether to enable batch-related options in CellFormer reconstruction.
-    use_spatial : bool, default True
-        Whether to enable spatial options in CellFormer reconstruction.
-    weight_mode : str, default "expression"
-        Pooling mode used for embedding aggregation (e.g., ``"expression"``).
-    force_tokenize : bool, default True
-        If True, redo tokenization and overwrite intermediate outputs.
-        Note: this flag also controls whether to skip BB inference when cached files exist.
-    use_dev_abs : bool, default False
-        Whether to use alternative dev/abs settings in tokenization (project-specific).
-
-    do_fit : bool, default True
-        Whether to fit/fine-tune CellFormer reconstruction.
-    fit_epochs : int, default 100
-        Number of epochs for fitting when ``do_fit=True``.
-    slice_sample : bool, optional
-        If True, select one slice for training (project-specific behavior).
-    enc_mod : str, default "flowformer"
-        Encoder module variant used by CellFormer.
-    mask_type : str, default "hidden"
-        Masking strategy, ``"hidden"`` or ``"input"``.
-    output_attentions : bool, default False
-        Whether to return/record attention weights during reconstruction.
-
-    save_model : bool, default True
-        Whether to save the trained/fitted CellFormer model.
-    save_model_path : str, optional
-        Path to save the model checkpoint. If None, a default path is used.
-    save_embedding_path : str, optional
-        Path to save final embeddings. If None, a default path is used.
-
-    device : torch.device or str, optional
-        Device to run on. If None, uses CUDA if available, else CPU.
-    seed : int, default 42
-        Random seed.
-    deterministic : bool, default True
-        Whether to enforce deterministic behavior (when supported).
+    stage1_config : dict or None, optional
+        Flat override dictionary for stage 1 settings.
+        It will be merged with the default stage 1 configuration.
+    stage2_config : dict or None, optional
+        Flat override dictionary for stage 2 settings.
+        It will be merged with the default stage 2 configuration.
+    do_fit : bool, default=True
+        Whether to fit / fine-tune the stage 2 model in this run.
+    fit_epochs : int, default=100
+        Number of epochs used when ``do_fit=True``.
+    use_single_slice : bool, default=False
+        Whether to use only a single slice for training the stage 2 model (project-specific behavior
+    device : torch.device or str or None, optional
+        Device used for computation.
+        If None, CUDA will be used when available; otherwise CPU is used.
+    seed : int, default=42
+        Random seed for reproducibility.
+    deterministic : bool, default=True
+        Whether to enforce deterministic behavior when possible.
+    save_model : bool, default=True
+        Whether to save the stage 2 model after running stage 2.
+    save_model_path : str or None, optional
+        Path used to save the stage 2 model.
+        If None and ``save_model=True``, a default path under ``output_dir``
+        will be used. If ``save_model=False``, this argument is ignored.
 
     Returns
     -------
     adata : anndata.AnnData
-        Updated AnnData object returned by ``run_bbcellformer_recon``.
-        Intermediate files (tokenization outputs, BB embeddings, final embeddings/model)
-        are saved under ``output_dir`` with the given ``output_prefix``.
+        AnnData object after completing the full BrainBeacon pipeline.
+
+    Notes
+    -----
+    - Stage 1 embeddings are saved to disk as ``bb_emb`` outputs.
+    - Stage 2 latent representations are saved to disk as ``bb_latent`` outputs.
+    - This function currently keeps stage 1 / stage 2 internal APIs unchanged
+      as much as possible, while reorganizing the top-level orchestration logic.
     """
-    import scanpy as sc
 
-    from brainbeacon.tokenizer import set_seed
-
-    # ====== 1. Setup ======
-    os.makedirs(output_dir, exist_ok=True)
+    # ====== Setup ======
     if seed is not None:
         set_seed(seed, deterministic=deterministic)
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif not isinstance(device, torch.device):
+        device = torch.device(device)
 
-    if stage1_config is None:
-        raise ValueError("`config_train` must be imported.")
+    cfg1 = merge_config(default_config=default_config1, new_config=stage1_config)
+    cfg2 = merge_config(default_config=default_config2, new_config=stage2_config)
+    cfg2['n_aux'] = cfg1['n_aux']
+    cfg2['bb_emb_dim'] = cfg1['dim_model']
+    cfg2['gene_dict_path'] = gene_dict_path
 
-    stage1_config.update({
-        "weight_mode": weight_mode,
-        "cd_weight": cd_weight,
-        "masking_p": 0,
-        "batch_size": 64,
-        "expr_mode": None,
-        # "use_gene_id_emb": True,
-        # "use_homo_emb": True,
-        # "use_rna_type_emb": True,
-        # "use_esm_emb": True,
-    })
-    if config_override:
-        stage1_config.update(config_override)
-
-    # ====== 2. Load AnnData ======
+    # ====== Load adata ======
     adata = sc.read_h5ad(adata_path)
+    adata.obs["species"] = species
     adata.obs["platform"] = assay
 
-    # ====== 3. Tokenization ======
-    bb_token_dir = os.path.join(output_dir, f"{output_prefix}_bb_token_dir")
+    # ====== Tokenization ======
+    os.makedirs(output_dir, exist_ok=True)
+    bb_token_dir = os.path.join(output_dir, f"{output_prefix}_tokens")
+    force_tokenize = cfg1['force_tokenize']
     token_data_path = run_tokenization(
         adata_path=adata_path,
-        bb_token_dir=bb_token_dir,
         gene_dict_path=gene_dict_path,
-        specie=specie,
+        bb_token_dir=bb_token_dir,
+        species=species,
         assay=assay,
-        use_hvg=use_hvg,
-        n_hvg=n_hvg,
         force_tokenize=force_tokenize,
-        use_dev_abs=use_dev_abs,
+        use_hvg=cfg1['use_hvg'],
+        n_hvg=cfg1['n_hvg'],
+        use_dev_abs=cfg1['use_dev_abs'],
     )
 
-    # ====== 4. BrainBeacon Inference ======
-    bb_embedding_path = os.path.join(output_dir, f"{output_prefix}_bb_embeddings.npz")
-    if os.path.exists(bb_embedding_path) and not force_tokenize:
-        print(f"Skipping BB inference. Found existing file: {bb_embedding_path}")
+    # ====== Stage1 Inference ======
+    stage1_embedding_path = os.path.join(output_dir, f"{output_prefix}_stage1_embeddings.npz")
+    if os.path.exists(stage1_embedding_path) and not force_tokenize:
+        print(f"Skipping stage1 inference. Found existing file: {stage1_embedding_path}")
+        bb_emb = np.load(stage1_embedding_path)['embeddings']
     else:
         start_time = time.time()
-        print(f"[BB inference] Start...")
-        bb_emb = run_bb_inference(
+        print(f"[stage1 inference] Start...")
+        bb_emb = run_stage1_inference(
             adata=adata,
-            token_data_path=token_data_path,
-            config_train=stage1_config,
+            config_train=cfg1,
             pretrain_ckpt=stage1_ckpt_path,
+            token_data_path=token_data_path,
+            save_path=stage1_embedding_path,
             device=device,
-            save_path=bb_embedding_path
         )
         end_time = time.time()
-        print(f"BB inference complete. Saved to: {bb_embedding_path}")
-        print(f"[BB inference] Time cost: {(end_time - start_time):.2f} sec")
-    # adata.obsm["bb_emb"] = bb_emb
+        print(f"Stage1 inference complete. Saved to: {stage1_embedding_path}")
+        print(f"[Stage1 inference] Time cost: {(end_time - start_time):.2f} sec")
+    adata.obsm["bb_emb"] = bb_emb
 
-    # ====== 5. CellFormer Reconstruction ======
-    if save_embedding_path is None:
-        save_embedding_path = os.path.join(output_dir, f"{output_prefix}_embeddings.npz")
-    if save_model and save_model_path is None:
-        save_model_path = os.path.join(output_dir, f"{output_prefix}_cellformer.pt")
+    # ====== Stage2 Inference ======
+    save_embedding_path = os.path.join(output_dir, f"{output_prefix}_stage2_embeddings.npz")
+    if save_model:
+        if save_model_path is None:
+            save_model_path = os.path.join(output_dir, f"{output_prefix}_cellformer.pt")
+    else:
+        save_model_path = None
 
-    adata = run_bbcellformer_recon(
+    adata = run_stage2_pipeline(
         adata=adata,
-        bb_embedding_path=bb_embedding_path,
-        bb_pretrain_path=stage1_ckpt_path,
-        cellformer_version="cellformer",
-        path_dict = path_dict,
-        cellformer_directory=os.path.dirname(stage2_ckpt_path),
-        device=device,
-        cellformer_pretrain_path=stage2_ckpt_path,
-        use_batch=use_batch,
-        use_spatial=use_spatial,
+        stage1_ckpt_path=stage1_ckpt_path,
+        stage2_ckpt_path=stage2_ckpt_path,
+        config=cfg2,
         do_fit=do_fit,
-        slice_sample=slice_sample,
         fit_epochs=fit_epochs,
-        enc_mod=enc_mod,
-        mask_type=mask_type,  # 'hidden' or 'input'
-        output_attentions=output_attentions,  # whether to return attention weights
-        save_embedding_path=save_embedding_path,
+        use_single_slice=use_single_slice,
         save_model_path=save_model_path,
+        save_embedding_path=save_embedding_path,
+        device=device,
     )
 
     return adata

@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 import numpy as np
-from brainbeacon.configs.stage1_config import stage1_config
 from ..embedder import OmicsEmbeddingLayer
 from ..utils.mask import MaskBuilder, NullMaskBuilder, HiddenMaskBuilder
 from ..encoder import setup_encoder
@@ -10,11 +9,10 @@ from ..latent import LatentModel, PreLatentNorm
 from ..objective import Objectives
 from ..head import setup_head
 
-config_train = stage1_config
 # Modified from CellPLM (https://github.com/OmicsML/CellPLM) for BrainBeacon integration.
 class OmicsFormer(nn.Module):
-    def __init__(self, gene_list, enc_mod, enc_hid, enc_layers, post_latent_dim, dec_mod, dec_hid, dec_layers,
-                 out_dim, batch_num=0, dataset_num=0, platform_num=0, mask_type='hidden', model_dropout=0.1,
+    def __init__(self, gene_list, enc_mod, enc_hid, enc_layers, post_latent_dim, dec_mod, dec_hid, dec_layers, bb_emb_dim,
+                 out_dim, slice_num=0, dataset_num=0, platform_num=0, mask_type='hidden', model_dropout=0.1,
                  activation='gelu', norm='layernorm', enc_head=8, mask_node_rate=0.5,
                  mask_feature_rate=0.8, drop_node_rate=0., max_batch_size=2000, sampling_mode="spatial",
                  center_ratio=0.5, knn_k=10, cat_dim=None, conti_dim=None,
@@ -25,13 +23,13 @@ class OmicsFormer(nn.Module):
         super(OmicsFormer, self).__init__()
 
         self.embedder = OmicsEmbeddingLayer(gene_list, enc_hid, norm, activation, model_dropout,
-                                            pe_type, cat_pe, gene_emb, inject_covariate=input_covariate, batch_num=batch_num)
+                                            pe_type, cat_pe, gene_emb, inject_covariate=input_covariate, batch_num=slice_num)
         if mask_type == 'hidden':
             self.embedder.feat_enc.bb_gene_emb = None
         # Project bb_emb (768) to enc_hid (e.g., 1024) if needed
         # self.bb_emb_dim = 768  # set according to your bb_emb dimension
-        self.bb_emb_dim = config_train['dim_model']  # set according to your bb_emb dimension
-        self.bb_weight = config_train.get('bb_weight', 0.5)
+        self.bb_emb_dim = bb_emb_dim # set according to your bb_emb dimension
+        self.bb_weight = 0.5
         if self.bb_emb_dim != enc_hid:
             self.linear_bb = nn.Linear(self.bb_emb_dim, enc_hid)
         else:
@@ -59,7 +57,7 @@ class OmicsFormer(nn.Module):
         elif latent_mod=='ae':
             self.latent.add_layer(type='merge', conti_dim=enc_hid, cat_dim=0, post_latent_dim=post_latent_dim)
         elif latent_mod=='gmvae':
-            self.latent.add_layer(type='gmvae', enc_hid=enc_hid, latent_dim=post_latent_dim, batch_num=batch_num,
+            self.latent.add_layer(type='gmvae', enc_hid=enc_hid, latent_dim=post_latent_dim, batch_num=slice_num,
                                   w_li=w_li, w_en=w_en, w_ce=w_ce, dropout=model_dropout, num_layers=dec_layers,
                                   num_clusters=num_clusters, lamda=lamda)
         elif latent_mod=='split':
@@ -73,17 +71,17 @@ class OmicsFormer(nn.Module):
             if dar:
                 self.latent.add_layer(type='adversarial', input_dims=np.arange(post_latent_dim), label_key='batch',
                                       discriminator_hidden=64, disc_lr=1e-3,
-                                      target_classes=batch_num)
+                                      target_classes=slice_num)
             if ecs:
                 self.latent.add_layer(type='ecs')
 
         self.head_type = head_type
         if head_type is not None:
             self.head = setup_head(head_type, post_latent_dim, dec_hid, out_dim, dec_layers,
-                                   model_dropout, norm, batch_num=batch_num)
+                                   model_dropout, norm, batch_num=slice_num)
         else:
             self.decoder = setup_decoder(dec_mod, post_latent_dim, dec_hid, out_dim, dec_layers,
-                                         model_dropout, norm, batch_num=batch_num, dataset_num=dataset_num, platform_num=platform_num)
+                                         model_dropout, norm, batch_num=slice_num, dataset_num=dataset_num, platform_num=platform_num)
             if 'objective' in kwargs:
                 self.objective = Objectives([{'type': kwargs['objective']}])
             else:

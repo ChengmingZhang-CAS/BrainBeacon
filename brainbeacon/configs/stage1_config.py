@@ -1,4 +1,5 @@
 stage1_config = {
+    # model configs
     'pretrained_path': None,
     'retake_training': False,
     'dim_feedforward': 1024,
@@ -36,7 +37,16 @@ stage1_config = {
     'root_path': '/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST',
     'esm_embedding_path': '/raid/zhangchengming/BrainBeacon-master/prior_knowledge/esm2_embeddings_d5120.pt',
     'pretrain_ckpt': None,
-    'gene_id': True
+    'gene_id': True,
+    'use_hvg': True,
+    'n_hvg': 1000,
+    'weight_mode': 'expression',
+    'expr_mode': None,
+    'force_tokenize': False,
+    'use_dev_abs': True,
+
+
+
 }
 
 train_path = [

@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 from copy import deepcopy
 from ..utils.eval import downstream_eval, aggregate_eval_results, imputation_eval
-from ..utils.data import XDict, TranscriptomicDataset, make_spatial_neighbors
+from ..utils.data import XDict, TranscriptomicDataset, make_spatial_neighbors, SPATIAL_PLATFORM_LIST
 from ..utils.mask import sample_knn_neighbors, build_spatial_cell_idx
 from typing import List, Literal, Union
 from .experimental import symbol_to_ensembl
@@ -37,7 +37,9 @@ ReconstructDefaultPipelineConfig = {
     'workers': 0,
 }
 
-def inference(model, dataloader, split, device, batch_size, order_required=False, use_knn=False, knn_k=10, output_attentions=False):
+
+def inference(model, dataloader, split, device, batch_size, order_required=False, use_knn=False, knn_k=5, center_ratio=0.5,
+              truncate_context=True, output_attentions=False):
     if order_required and split:
         warnings.warn('When cell order required to be preserved, dataset split will be ignored.')
 
@@ -64,8 +66,8 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                     knn_k=knn_k,
                     # center_ratio=None,  # center
                     # truncate_context=False,
-                    center_ratio=0.5,
-                    truncate_context=True,
+                    center_ratio=center_ratio,
+                    truncate_context=truncate_context,
                     min_context_per_center=1,
                 )
 
@@ -166,40 +168,36 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
         return result
 
 class ReconstructPipeline(Pipeline):
-    def __init__(self,
-                 pretrain_prefix: str,
-                 overwrite_config: dict = ReconstructDefaultModelConfig,
-                 pretrain_directory: str = './ckpt',
-                 bb_pretrain_path: str = None,
-                 cellformer_pretrain_path: str = None,
-                 path_dict: dict = None,
-                 use_pretrain: bool = True,
-                 ):
+    def __init__(
+            self,
+            config: dict | None = None,
+            stage1_ckpt_path: str = None,
+            stage2_ckpt_path: str = None,
+            use_pretrain: bool = True,
+    ):
         super().__init__(
-            pretrain_prefix=pretrain_prefix,
-            overwrite_config=overwrite_config,
-            pretrain_directory=pretrain_directory,
-            bb_pretrain_path=bb_pretrain_path,
-            cellformer_pretrain_path=cellformer_pretrain_path,
-            path_dict = path_dict,
-            use_pretrained=use_pretrain
+            config=config,
+            stage1_ckpt_path=stage1_ckpt_path,
+            stage2_ckpt_path=stage2_ckpt_path,
+            use_pretrain=use_pretrain,
         )
         self.label_encoders = None
 
     def fit(self, adata: ad.AnnData,
-            train_config: dict = None,
+            config_override: dict = None,
             split_field: str = None,
             train_split: str = 'train',
             valid_split: str = 'valid',
             covariate_fields: List[str] = None,
             label_fields: List[str] = None,
             batch_gene_list: dict = None,
+            covariate_encoders: dict = None,
             ensembl_auto_conversion: bool = True,
             device: Union[str, torch.device] = 'cpu',
             ):
         config = ReconstructDefaultPipelineConfig.copy()
-        if train_config:
-            config.update(train_config)
+        if config_override:
+            config.update(config_override)
         torch.cuda.empty_cache()
         self.model.to(device)
         assert not self.fitted, 'Current pipeline is already fitted and does not support continual training. Please initialize a new pipeline.'
@@ -208,7 +206,15 @@ class ReconstructPipeline(Pipeline):
         # adata = ad.concat([query_data, reference_data], join='outer', label='ref', keys=[False, True])
         adata = self.common_preprocess(adata, 0, covariate_fields, ensembl_auto_conversion=False)
         print(f'After filtering, {adata.shape[1]} genes remain.')
-        dataset = TranscriptomicDataset(adata, split_field, covariate_fields, label_fields, batch_gene_list)
+        # dataset = TranscriptomicDataset(adata, split_field, covariate_fields, label_fields, batch_gene_list)
+        dataset = TranscriptomicDataset(
+            adata=adata,
+            split_field=split_field,
+            covariate_fields=covariate_fields,
+            label_fields=label_fields,
+            batch_gene_list=batch_gene_list,
+            covariate_encoders=covariate_encoders,
+        )
         dataloader = DataLoader(dataset, batch_size=None, shuffle=True, num_workers=config['workers'])
         optim = torch.optim.AdamW(self.model.parameters(), lr=config['lr'], weight_decay=config['wd'])
 
@@ -283,8 +289,9 @@ class ReconstructPipeline(Pipeline):
         print(f'After filtering, {adata.shape[1]} genes remain.')
         dataset = TranscriptomicDataset(adata, None, order_required=True)
         dataloader = DataLoader(dataset, batch_size=None, shuffle=False, num_workers=0)
-        output = inference(self.model, dataloader, None, device, config['max_eval_batch_size'],
-                           order_required=True, use_knn=True, knn_k=5, output_attentions=output_attentions)
+        output = inference(self.model, dataloader, None, device, config['max_eval_batch_size'], order_required=True,
+                           use_knn=config['use_patch'], knn_k=config['knn_k'], center_ratio=config['center_ratio'],
+                           output_attentions=output_attentions)
         pred = output['pred']
         latent = output['latent']
         # Ensure target_genes is defined
