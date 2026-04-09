@@ -120,7 +120,7 @@ class NB(nn.Module):
 
 
 class NBMLPDecoder(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim, num_layers, dropout, norm, batch_num=0, dataset_num=0, platform_num=0, alpha_cov=0.2):
+    def __init__(self, in_dim, hidden_dim, out_dim, num_layers, dropout, norm, batch_num=0, dataset_num=0, platform_num=0, alpha_cov=1):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.norm = norm
@@ -128,9 +128,9 @@ class NBMLPDecoder(nn.Module):
         self.alpha_cov = alpha_cov
         self.covariate_layers = nn.ModuleList()
         self.covariate_num = {
-            'batch': batch_num,
-            'dataset': dataset_num,
-            'platform': platform_num,
+            'slice_cov': batch_num,
+            'dataset_cov': dataset_num,
+            'platform_cov': platform_num,
         }
         for i in range(num_layers-1):
             dim = hidden_dim if i > 0 else in_dim

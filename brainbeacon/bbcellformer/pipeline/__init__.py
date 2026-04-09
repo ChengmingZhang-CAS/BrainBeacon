@@ -139,8 +139,8 @@ class Pipeline(ABC):
     def common_preprocess(self, adata, hvg, covariate_fields, ensembl_auto_conversion):
         if covariate_fields:
             for i in covariate_fields:
-                assert i in ['slice_index', 'dataset_index', 'platform'], \
-                    'Currently does not support customized covariate other than "slice_index", "dataset_index" and "platform"'
+                assert i in ['slice_cov', 'dataset_cov', 'platform_cov'], \
+                    'Currently does not support customized covariate other than "slice_cov", "dataset_cov" and "platform_cov"'
         adata = adata.copy()
         if not adata.var.index.isin(self.model.gene_set).any():
             if ensembl_auto_conversion:

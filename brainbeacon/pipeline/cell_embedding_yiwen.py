@@ -293,6 +293,36 @@ class ZeroshotJoblibDataset(Dataset):
             else:
                 return self.__getitem__(idx + 1)
 
+class InMemoryTokenDataset(Dataset):
+    """In-memory token dataset for fast inference (no joblib I/O).
+
+    Works with standard DataLoader batching (single-cell granularity).
+    """
+
+    def __init__(self, token_dict: dict, max_len: int = 1000):
+        self.real_indices = token_dict["real_indices"][:, :max_len].astype(np.int32)
+        self.attention_mask = token_dict["attention_mask"][:, :max_len]
+        self.connect_comp = token_dict["connect_comp"][:, :max_len].astype(np.int32)
+        self.rna_type = token_dict["rna_type"][:, :max_len].astype(np.int32)
+        self.neighbor_gene_dist = token_dict["neighbor_gene_dist"][:, :max_len].astype(np.int32)
+        self.exp = token_dict["exp"][:, :max_len].astype(np.float32)
+        self.cell_raw_index = token_dict["cell_raw_index"]
+
+    def __len__(self):
+        return self.real_indices.shape[0]
+
+    def __getitem__(self, idx):
+        return (
+            torch.as_tensor(self.real_indices[idx], dtype=torch.long),
+            torch.as_tensor(self.attention_mask[idx], dtype=torch.bool),
+            torch.as_tensor(self.connect_comp[idx], dtype=torch.long),
+            torch.as_tensor(self.rna_type[idx], dtype=torch.long),
+            str(self.cell_raw_index[idx]),
+            torch.as_tensor(self.neighbor_gene_dist[idx], dtype=torch.float),
+            torch.as_tensor(self.exp[idx], dtype=torch.float),
+        )
+
+
 class CellEmbeddingPipeline:
     def __init__(self, pretrain_ckpt: str, model_config: dict, device: Union[str, torch.device] = 'cpu'):
         """
@@ -312,7 +342,21 @@ class CellEmbeddingPipeline:
         if self.pretrain_ckpt:
             try:
                 ckpt = torch.load(self.pretrain_ckpt, map_location=self.device)
-                self.model.pretrain_model.load_state_dict(ckpt['model_state_dict'])
+                pretrained_dict = ckpt['model_state_dict']
+                model_dict = self.model.pretrain_model.state_dict()
+                compatible_dict = {}
+                skipped = []
+                for k, v in pretrained_dict.items():
+                    if k in model_dict and v.shape == model_dict[k].shape:
+                        compatible_dict[k] = v
+                    elif k in model_dict:
+                        skipped.append(f"{k}: ckpt {v.shape} vs model {model_dict[k].shape}")
+                if skipped:
+                    print(f"[Warning] Skipped {len(skipped)} shape-mismatched params (will use init weights):")
+                    for s in skipped:
+                        print(f"  {s}")
+                model_dict.update(compatible_dict)
+                self.model.pretrain_model.load_state_dict(model_dict)
                 print(f"Loaded pretrain_model checkpoint: {self.pretrain_ckpt}")
             except Exception as e:
                 print(f"Error loading checkpoint: {e}")
@@ -715,6 +759,143 @@ def run_bb_inference(
     return ordered_embeddings
 
 
+def run_bb_inference_fast(
+    adata,
+    gene_dict_path: str,
+    config_train: dict,
+    pretrain_ckpt: str,
+    device,
+    specie: str,
+    assay: str,
+    batch_size: int = 64,
+    num_workers: int = 4,
+    use_hvg: bool = True,
+    n_hvg: int = 1000,
+    use_dev_abs: bool = False,
+    save_path: str = None,
+):
+    """Fast in-memory BrainBeacon inference: adata in, embeddings out.
+
+    Eliminates all intermediate joblib I/O. Supports dynamic batch size.
+    Produces identical results to run_tokenization() + run_bb_inference().
+    """
+    from brainbeacon.tokenizer_fast import tokenize_adata_inmemory
+
+    time0 = time.time()
+    config_train = normalize_brainbeacon_model_config(config_train)
+
+    # Step 1: In-memory tokenization
+    print("[Fast] Tokenizing in memory...")
+    t_tok = time.time()
+    token_dict = tokenize_adata_inmemory(
+        adata, gene_dict_path, specie=specie, assay=assay,
+        use_hvg=use_hvg, n_hvg=n_hvg, use_dev_abs=use_dev_abs,
+    )
+    print(f"[Fast] Tokenization done: {token_dict['real_indices'].shape[0]} cells, "
+          f"{time.time() - t_tok:.1f}s")
+
+    # Step 2: Build dataset & dataloader
+    dataset = InMemoryTokenDataset(token_dict, max_len=1000)
+    dataloader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
+    )
+
+    # Step 3: Model inference
+    print(f"[Fast] Running inference (batch_size={batch_size})...")
+    pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config_train, device=device)
+    pipeline.model.eval()
+
+    esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu")
+
+    pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
+    weight_mode = config_train.get("weight_mode", "expression")
+    cd_weight = config_train.get("cd_weight", 0.02)
+    expr_mode = config_train.get("expr_mode", None)
+
+    all_indices = []
+    all_embeddings = []
+
+    with torch.no_grad():
+        for real_indices, attention_mask, connect_comp, rna_type, cell_raw_idx, neighbor_gene_distribution, exp in tqdm(
+            dataloader, desc="[Fast] Inference"
+        ):
+            # Standard DataLoader output: (batch_size, seq_len), no [0] unwrapping needed
+            real_indices_view = real_indices.view(-1).long()
+            neighbor_gene_distribution = neighbor_gene_distribution.long()
+
+            esm_embedding = torch.index_select(esm_embedding_map, dim=0, index=real_indices_view)
+            esm_embedding = esm_embedding.view(real_indices.shape[0], real_indices.shape[1], esm_embedding.shape[-1])
+            sequence_mask = torch.where(real_indices == 1, torch.zeros_like(real_indices), torch.ones_like(real_indices))
+
+            real_indices = real_indices.to(device)
+            attention_mask = attention_mask.to(device)
+            connect_comp = connect_comp.to(device)
+            rna_type = rna_type.to(device)
+            esm_embedding = esm_embedding.to(device)
+            neighbor_gene_distribution = neighbor_gene_distribution.to(device)
+
+            output = pipeline.model(
+                real_indices, connect_comp, rna_type, attention_mask,
+                esm_embedding, neighbor_gene_distribution, sequence_mask,
+            )
+            output = output.detach().cpu()
+
+            # Pooling (same logic as infer())
+            if weight_mode == "expression":
+                aux = torch.zeros((exp.shape[0], 2), device=exp.device)
+                cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device)
+                gene_expr = exp[:, 3:]
+                if expr_mode == "log1pnorm":
+                    gene_expr = torch.log1p(gene_expr) / torch.log(torch.tensor(2.0, device=gene_expr.device))
+                gene_expr = gene_expr / gene_expr.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                exp_full = torch.cat([aux, cd, gene_expr], dim=1)
+                expr_weights = exp_full[:, pool_skip_tokens:]
+            else:
+                expr_weights = None
+
+            output = masked_weighted_pooling(
+                output[:, pool_skip_tokens:, :],
+                sequence_mask[:, pool_skip_tokens:],
+                expr_weights=expr_weights,
+                weight_mode=weight_mode,
+                weight_decay=config_train.get("weight_decay", 0.998),
+                temperature=config_train.get("temperature", 300),
+            )
+
+            # cell_raw_idx is a list of strings from DataLoader default collate
+            all_indices.extend(cell_raw_idx)
+            all_embeddings.append(output.numpy())
+
+    pred_indices = np.array(all_indices)
+    pred_embeddings = np.concatenate(all_embeddings, axis=0)
+
+    # Order check
+    obs_names = np.array(adata.obs_names)
+    if np.array_equal(pred_indices, obs_names):
+        ordered_embeddings = pred_embeddings
+    elif len(pred_indices) == len(obs_names):
+        # Reorder to match adata.obs_names
+        idx_map = {name: i for i, name in enumerate(pred_indices)}
+        order = [idx_map[name] for name in obs_names]
+        ordered_embeddings = pred_embeddings[order]
+    else:
+        raise ValueError(
+            f"Cell count mismatch: {len(pred_indices)} predicted vs {len(obs_names)} in adata."
+        )
+
+    if save_path is not None:
+        np.savez_compressed(save_path, embeddings=ordered_embeddings)
+        print(f"[Fast] Embeddings saved to {save_path}")
+
+    elapsed = time.time() - time0
+    print(f"[Fast] Total time: {elapsed / 60:.2f} min")
+
+    del pipeline, esm_embedding_map
+    torch.cuda.empty_cache()
+    return ordered_embeddings
+
+
 def run_bbcellformer_recon(
     adata,
     bb_embedding_path,            # path to .npz embedding file
@@ -736,15 +917,6 @@ def run_bbcellformer_recon(
     save_model_path=None,  # optional: save .pt model_raw weights
 ):
     from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
-    from sklearn.preprocessing import LabelEncoder
-    from ..bbcellformer.utils.data import SPATIAL_PLATFORM_LIST
-
-    covariate_fields = ["platform"]
-    platform_le = LabelEncoder()
-    platform_le.fit(SPATIAL_PLATFORM_LIST)
-    covariate_encoders = {
-        "platform": platform_le
-    }
 
     # Load AnnData file
     data = adata.copy()
@@ -798,6 +970,7 @@ def run_bbcellformer_recon(
         # "use_hidden_pe": False,
         "use_hidden_pe": True,
         "pe_type": 'sin',
+        "use_spatial_patch": False,
         # "pe_type": 'fourier',
         # 'mask_type': 'input',
     }
@@ -834,11 +1007,7 @@ def run_bbcellformer_recon(
             split_field='valid_split',
             train_split='train',
             valid_split='valid',
-            # covariate_fields=covariate_fields,
-            # covariate_encoders=covariate_encoders,
-            covariate_fields=None,
-            covariate_encoders=None,
-            device=device,
+            device=device
         )
     inference_config = {
         'lr': 5e-4,
@@ -1029,42 +1198,32 @@ def run_bbcellformer_pipeline(
     # ====== 2. Load AnnData ======
     adata = sc.read_h5ad(adata_path)
     adata.obs["platform"] = assay
-    first_slice = adata.obs["slice"].unique()[0]
-    adata.obs.loc[adata.obs["slice"] == first_slice, "platform"] = "xenium"
 
-    # ====== 3. Tokenization ======
-    bb_token_dir = os.path.join(output_dir, f"{output_prefix}_bb_token_dir")
-    token_data_path = run_tokenization(
-        adata_path=adata_path,
-        bb_token_dir=bb_token_dir,
-        gene_dict_path=gene_dict_path,
-        specie=specie,
-        assay=assay,
-        use_hvg=use_hvg,
-        n_hvg=n_hvg,
-        force_tokenize=force_tokenize,
-        use_dev_abs=use_dev_abs,
-    )
-
-    # ====== 4. BrainBeacon Inference ======
+    # ====== 3+4. BrainBeacon Tokenization + Inference ======
     bb_embedding_path = os.path.join(output_dir, f"{output_prefix}_bb_embeddings.npz")
     if os.path.exists(bb_embedding_path) and not force_tokenize:
         print(f"Skipping BB inference. Found existing file: {bb_embedding_path}")
     else:
         start_time = time.time()
-        print(f"[BB inference] Start...")
-        bb_emb = run_bb_inference(
+        print(f"[BB inference] Start (fast in-memory path)...")
+        bb_emb = run_bb_inference_fast(
             adata=adata,
-            token_data_path=token_data_path,
+            gene_dict_path=gene_dict_path,
             config_train=stage1_config,
             pretrain_ckpt=stage1_ckpt_path,
             device=device,
-            save_path=bb_embedding_path
+            specie=specie,
+            assay=assay,
+            batch_size=stage1_config.get("batch_size", 64),
+            num_workers=4,
+            use_hvg=use_hvg,
+            n_hvg=n_hvg,
+            use_dev_abs=use_dev_abs,
+            save_path=bb_embedding_path,
         )
         end_time = time.time()
         print(f"BB inference complete. Saved to: {bb_embedding_path}")
         print(f"[BB inference] Time cost: {(end_time - start_time):.2f} sec")
-    # adata.obsm["bb_emb"] = bb_emb
 
     # ====== 5. CellFormer Reconstruction ======
     if save_embedding_path is None:

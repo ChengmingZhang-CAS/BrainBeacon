@@ -91,6 +91,38 @@ def _get_discrete_cmap(n_labels: int):
     return ListedColormap(colors)
 
 
+def _sanitize_filename(text: str) -> str:
+    """Convert text to a safe filename fragment."""
+    return str(text).replace("/", "_").replace("\\", "_").replace(" ", "_")
+
+
+def _infer_plot_kind(results_df: pd.DataFrame, kind: Optional[str] = None) -> str:
+    """Infer plot kind automatically when not specified."""
+    if kind is not None:
+        if kind not in {"bar", "box"}:
+            raise ValueError("kind must be 'bar' or 'box'.")
+        return kind
+
+    if "slice" in results_df.columns and results_df["slice"].nunique() > 1:
+        return "box"
+    if "slice_id" in results_df.columns and results_df["slice_id"].nunique() > 1:
+        return "box"
+
+    return "bar"
+
+
+def _is_summary_metric(metric: str) -> bool:
+    """Check whether a metric column looks like a summarized metric."""
+    return str(metric).endswith("_mean")
+
+
+def _get_summary_std_col(metric: str) -> Optional[str]:
+    """Return paired std column for a summary metric."""
+    if _is_summary_metric(metric):
+        return metric[:-5] + "_std"
+    return None
+
+
 # =============================================================================
 # Spatial and UMAP plotting
 # =============================================================================
@@ -121,7 +153,7 @@ def plot_spatial(
     unique_labels, _, label_values = _build_label_to_int(labels)
     cmap = _get_discrete_cmap(len(unique_labels))
 
-    scatter = ax.scatter(
+    ax.scatter(
         coord[:, 0],
         coord[:, 1],
         c=label_values,
@@ -185,7 +217,7 @@ def plot_umap(
     unique_labels, _, label_values = _build_label_to_int(labels)
     cmap = _get_discrete_cmap(len(unique_labels))
 
-    scatter = ax.scatter(
+    ax.scatter(
         umap[:, 0],
         umap[:, 1],
         c=label_values,
@@ -302,6 +334,9 @@ def plot_metric_comparison(
     figsize=(6, 5),
     rotation: float = 45,
     save_path: Optional[str] = None,
+    error_col: Optional[str] = None,
+    use_errorbar: bool = True,
+    capsize: float = 3.0,
 ):
     """
     Plot one metric comparison across groups.
@@ -316,6 +351,10 @@ def plot_metric_comparison(
         Group column on x-axis.
     kind : str
         'bar' or 'box'.
+    error_col : str or None
+        Error column for bar plot, such as 'ari_std'.
+    use_errorbar : bool
+        Whether to draw error bars when available.
     """
     if x not in results_df.columns:
         raise KeyError(f"{x} not found in results_df.columns.")
@@ -323,13 +362,39 @@ def plot_metric_comparison(
 
     fig, ax, created = _prepare_ax(ax=ax, figsize=figsize)
 
-    df = results_df[[x, metric]].dropna().copy()
+    base_cols = [x, metric]
+    if error_col is not None and error_col in results_df.columns:
+        base_cols.append(error_col)
+
+    df = results_df[base_cols].dropna(subset=[x, metric]).copy()
     if len(df) == 0:
         raise ValueError(f"No valid rows available for metric={metric} and x={x}.")
 
     if kind == "bar":
-        grouped = df.groupby(x, sort=False)[metric].mean()
-        ax.bar(grouped.index.astype(str), grouped.values)
+        if error_col is None and use_errorbar:
+            inferred_error_col = _get_summary_std_col(metric)
+            if inferred_error_col in results_df.columns:
+                error_col = inferred_error_col
+                if error_col not in df.columns:
+                    df = results_df[[x, metric, error_col]].dropna(subset=[x, metric]).copy()
+
+        if error_col is not None and error_col in df.columns:
+            plot_df = (
+                df.groupby(x, sort=False, as_index=False)
+                .agg(**{
+                    metric: (metric, "mean"),
+                    error_col: (error_col, "mean"),
+                })
+            )
+            ax.bar(
+                plot_df[x].astype(str),
+                plot_df[metric].to_numpy(),
+                yerr=plot_df[error_col].to_numpy() if use_errorbar else None,
+                capsize=capsize if use_errorbar else 0,
+            )
+        else:
+            grouped = df.groupby(x, sort=False)[metric].mean()
+            ax.bar(grouped.index.astype(str), grouped.values)
 
     elif kind == "box":
         groups = []
@@ -347,7 +412,6 @@ def plot_metric_comparison(
     ax.set_title(title if title is not None else f"{metric} by {x}")
     ax.tick_params(axis="x", rotation=rotation)
 
-    # Better alignment for long method names
     for tick in ax.get_xticklabels():
         tick.set_horizontalalignment("right")
 
@@ -399,29 +463,15 @@ def plot_all_metric_comparisons(
     rotation: float = 45,
     prefix: str = "",
     split_by: Optional[str] = "label_key",
+    use_errorbar: bool = True,
+    capsize: float = 3.0,
 ):
     """
-    Plot each metric as a separate figure, optionally split by one column
-    (for example, label_key).
+    Plot each metric as a separate figure, optionally split by one column.
 
-    Parameters
-    ----------
-    results_df : pd.DataFrame
-        Benchmark results.
-    metrics : Sequence[str]
-        Metrics to plot.
-    output_dir : str or None
-        If provided, save each plot to output_dir.
-    x : str
-        Group column on x-axis.
-    kind : str or None
-        'bar' or 'box'. If None, infer automatically within each subset.
-    rotation : float
-        X tick label rotation.
-    prefix : str
-        Filename prefix.
-    split_by : str or None
-        Column used to split figures. If None, all rows are plotted together.
+    Typical usage:
+    - summary_df + summary metrics -> bar plots with error bars
+    - raw all_results_df + raw metrics -> box plots
     """
     figures = []
 
@@ -445,14 +495,7 @@ def plot_all_metric_comparisons(
                 grouped_data.append((str(group_name), subdf))
 
     for group_name, subdf in grouped_data:
-        current_kind = kind
-        if current_kind is None:
-            if "slice" in subdf.columns and subdf["slice"].nunique() > 1:
-                current_kind = "box"
-            elif "slice_id" in subdf.columns and subdf["slice_id"].nunique() > 1:
-                current_kind = "box"
-            else:
-                current_kind = "bar"
+        current_kind = _infer_plot_kind(subdf, kind=kind)
 
         for metric in metrics:
             save_path = None
@@ -461,9 +504,15 @@ def plot_all_metric_comparisons(
                 if split_by is None:
                     filename = f"{prefix}{metric}_{current_kind}_by_{x}.png"
                 else:
-                    safe_group_name = str(group_name).replace("/", "_").replace(" ", "_")
+                    safe_group_name = _sanitize_filename(group_name)
                     filename = f"{prefix}{safe_group_name}_{metric}_{current_kind}_by_{x}.png"
                 save_path = os.path.join(output_dir, filename)
+
+            error_col = None
+            if current_kind == "bar":
+                inferred_error_col = _get_summary_std_col(metric)
+                if inferred_error_col in subdf.columns:
+                    error_col = inferred_error_col
 
             title = f"{metric} by {x}" if split_by is None else f"{group_name}: {metric} by {x}"
 
@@ -475,6 +524,9 @@ def plot_all_metric_comparisons(
                 title=title,
                 rotation=rotation,
                 save_path=save_path,
+                error_col=error_col,
+                use_errorbar=use_errorbar,
+                capsize=capsize,
             )
             figures.append((group_name, metric, fig, ax))
 
@@ -491,56 +543,115 @@ def plot_metric_subplots(
     rotation: float = 45,
     suptitle: Optional[str] = None,
     save_path: Optional[str] = None,
+    split_by: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    prefix: str = "",
+    use_errorbar: bool = True,
+    capsize: float = 3.0,
 ):
     """
     Plot multiple metrics in one subplot figure.
+
+    If split_by is provided, generate one subplot figure per group.
     """
     metrics = [m for m in metrics if m in results_df.columns]
     if len(metrics) == 0:
         raise ValueError("No valid metrics found in results_df.")
 
-    if kind is None:
-        if "slice" in results_df.columns and results_df["slice"].nunique() > 1:
-            kind = "box"
-        else:
-            kind = "bar"
+    if x not in results_df.columns:
+        raise KeyError(f"{x} not found in results_df.columns.")
 
-    n_panels = len(metrics)
-    nrows = math.ceil(n_panels / ncols)
+    if split_by is not None and split_by not in results_df.columns:
+        raise KeyError(f"{split_by} not found in results_df.columns.")
 
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=(figsize_per_panel[0] * ncols, figsize_per_panel[1] * nrows),
-    )
+    def _plot_one_subplot_figure(
+        subdf: pd.DataFrame,
+        current_suptitle: Optional[str],
+        current_save_path: Optional[str],
+    ):
+        current_kind = _infer_plot_kind(subdf, kind=kind)
 
-    if isinstance(axes, np.ndarray):
-        axes = axes.flatten()
-    else:
-        axes = [axes]
+        n_panels = len(metrics)
+        nrows = math.ceil(n_panels / ncols)
 
-    for i, metric in enumerate(metrics):
-        plot_metric_comparison(
-            results_df=results_df,
-            metric=metric,
-            x=x,
-            kind=kind,
-            rotation=rotation,
-            ax=axes[i],
-            save_path=None,
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=(figsize_per_panel[0] * ncols, figsize_per_panel[1] * nrows),
         )
-        axes[i].set_title(metric)
 
-    for j in range(len(metrics), len(axes)):
-        axes[j].axis("off")
+        if isinstance(axes, np.ndarray):
+            axes = axes.flatten()
+        else:
+            axes = [axes]
 
-    if suptitle is not None:
-        fig.suptitle(suptitle)
+        for i, metric in enumerate(metrics):
+            error_col = None
+            if current_kind == "bar":
+                inferred_error_col = _get_summary_std_col(metric)
+                if inferred_error_col in subdf.columns:
+                    error_col = inferred_error_col
 
-    fig.tight_layout()
+            plot_metric_comparison(
+                results_df=subdf,
+                metric=metric,
+                x=x,
+                kind=current_kind,
+                rotation=rotation,
+                ax=axes[i],
+                save_path=None,
+                error_col=error_col,
+                use_errorbar=use_errorbar,
+                capsize=capsize,
+            )
+            axes[i].set_title(metric)
 
-    _save_figure(fig, save_path)
-    return fig, axes
+        for j in range(len(metrics), len(axes)):
+            axes[j].axis("off")
+
+        if current_suptitle is not None:
+            fig.suptitle(current_suptitle)
+
+        fig.tight_layout()
+        _save_figure(fig, current_save_path)
+        return fig, axes
+
+    if split_by is None:
+        return _plot_one_subplot_figure(
+            subdf=results_df,
+            current_suptitle=suptitle,
+            current_save_path=save_path,
+        )
+
+    grouped_outputs = []
+    for group_name, subdf in results_df.groupby(split_by, sort=False):
+        subdf = subdf.copy()
+        if len(subdf) == 0:
+            continue
+
+        current_save_path = None
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            safe_group_name = _sanitize_filename(group_name)
+            filename = f"{prefix}metrics_subplots_{safe_group_name}.png"
+            current_save_path = os.path.join(output_dir, filename)
+        elif save_path is not None:
+            root, ext = os.path.splitext(save_path)
+            safe_group_name = _sanitize_filename(group_name)
+            current_save_path = f"{root}_{safe_group_name}{ext}"
+
+        current_suptitle = suptitle if suptitle is not None else f"Metrics - {group_name}"
+        if suptitle is not None:
+            current_suptitle = f"{suptitle} - {group_name}"
+
+        fig, axes = _plot_one_subplot_figure(
+            subdf=subdf,
+            current_suptitle=current_suptitle,
+            current_save_path=current_save_path,
+        )
+        grouped_outputs.append((str(group_name), fig, axes))
+
+    return grouped_outputs
 
 
 # =============================================================================
@@ -549,7 +660,7 @@ def plot_metric_subplots(
 
 def get_default_metric_list(results_df: Optional[pd.DataFrame] = None) -> List[str]:
     """
-    Return default metric list for clustering benchmark plotting.
+    Return default raw metric list for clustering benchmark plotting.
     """
     metric_list = [
         "ari",
@@ -568,3 +679,53 @@ def get_default_metric_list(results_df: Optional[pd.DataFrame] = None) -> List[s
         return metric_list
 
     return [m for m in metric_list if m in results_df.columns]
+
+
+def get_summary_metric_list(results_df: Optional[pd.DataFrame] = None) -> List[str]:
+    """
+    Return default summary metric list, using *_mean columns.
+    """
+    metric_list = [
+        "ari_mean",
+        "nmi_mean",
+        "ami_mean",
+        "homogeneity_mean",
+        "completeness_mean",
+        "v_measure_mean",
+        "purity_mean",
+        "silhouette_mean",
+        "neighbor_agreement_mean",
+        "label_entropy_mean",
+    ]
+
+    if results_df is None:
+        return metric_list
+
+    return [m for m in metric_list if m in results_df.columns]
+
+
+def convert_raw_metrics_to_summary(metrics: Sequence[str]) -> List[str]:
+    """
+    Convert raw metric names to summary metric names by appending '_mean'.
+    """
+    return [f"{m}_mean" for m in metrics]
+
+
+def get_available_metric_list(
+    results_df: pd.DataFrame,
+    prefer_summary: bool = False,
+) -> List[str]:
+    """
+    Return available metric columns automatically.
+    """
+    if prefer_summary:
+        summary_metrics = get_summary_metric_list(results_df)
+        if len(summary_metrics) > 0:
+            return summary_metrics
+
+    raw_metrics = get_default_metric_list(results_df)
+    if len(raw_metrics) > 0:
+        return raw_metrics
+
+    summary_metrics = get_summary_metric_list(results_df)
+    return summary_metrics

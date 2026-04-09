@@ -97,10 +97,12 @@ def drop_nodes(x_dict, drop_node_rate=0., max_batch_size=2000, inplace=True, cel
         x_dict['x_masked_seq'] = x_dict['x_masked_seq'].index_select(0, cell_idx)
     if 'dataset' in x_dict:
         x_dict['dataset'] = x_dict['dataset'][cell_idx]
-    if 'slice_index' in x_dict:
-        x_dict['slice_index'] = x_dict['slice_index'][cell_idx]
-    if 'dataset_index' in x_dict:
-        x_dict['dataset_index'] = x_dict['dataset_index'][cell_idx]
+    if 'slice_cov' in x_dict:
+        x_dict['slice_cov'] = x_dict['slice_cov'][cell_idx]
+    if 'dataset_cov' in x_dict:
+        x_dict['dataset_cov'] = x_dict['dataset_cov'][cell_idx]
+    if 'platform_cov' in x_dict:
+        x_dict['platform_cov'] = x_dict['platform_cov'][cell_idx]
     if 'platform' in x_dict:
         x_dict['platform'] = x_dict['platform'][cell_idx]
     if 'loss_mask' in x_dict:

@@ -48,7 +48,7 @@ stage2_config = {
   "batch_flip": True,
   "mask_beta": True,
   "use_pretrain": True,
-  "covariate_fields": ["slice_index", "dataset_index", "platform"],
+  "covariate_fields": ["slice_cov", "dataset_cov", "platform_cov"],
   # "covariate_fields": None,
   "slice_num": 2000,
   "dataset_num": 200,
