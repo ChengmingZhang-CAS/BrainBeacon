@@ -457,10 +457,11 @@ def main() -> None:
 
     from anndata import read_h5ad
 
+    import numpy as np
+
     from brainbeacon.pipeline.cell_embedding import (
         CellEmbeddingPipeline,
         normalize_brainbeacon_model_config,
-        run_bb_inference,
         run_tokenization,
     )
 
@@ -575,6 +576,7 @@ def main() -> None:
     print(f"Token batch size: {token_batch_size}")
     print(f"DataLoader workers: {int(config.get('dataloader_num_workers', 4))}")
 
+    config["batch_size"] = 1
     pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config, device=device)
 
     try:
@@ -610,9 +612,6 @@ def main() -> None:
                 n_hvg=n_hvg,
                 force_tokenize=force_tokenize,
                 use_dev_abs=use_dev_abs,
-                min_genes=min_genes,
-                min_cells=min_cells,
-                token_batch_size=token_batch_size,
             )
 
             if npz_save_path is not None:
@@ -620,23 +619,46 @@ def main() -> None:
             ensure_parent_dir(output_h5ad)
 
             print(f"[{index}/{len(adata_paths)}] Running BrainBeacon inference from {token_data_path}")
-            embeddings = run_bb_inference(
-                adata=adata,
-                token_data_path=token_data_path,
-                config_train=config,
-                pretrain_ckpt=pretrain_ckpt,
-                device=device,
-                save_path=npz_save_path,
-                pipeline=pipeline,
-            )
+            try:
+                pred = pipeline.run(data_paths=token_data_path, config_train=config)
 
-            adata.obsm[obsm_key] = embeddings
-            adata.write_h5ad(output_h5ad)
-            print(f"[{index}/{len(adata_paths)}] Saved h5ad to {output_h5ad}")
+                pred_indices, pred_embeddings = zip(*[(str(idx[0]), emb.numpy()) for idx, emb in pred])
+                pred_indices = np.array(pred_indices)
+                pred_embeddings = np.array(pred_embeddings)
+                obs_names = np.array(adata.obs_names)
+                dim = pred_embeddings.shape[1]
+
+                if np.array_equal(pred_indices, obs_names):
+                    embeddings = pred_embeddings
+                else:
+                    # Align by cell index: map predictions to adata obs order
+                    pred_map = dict(zip(pred_indices, pred_embeddings))
+                    matched = sum(1 for name in obs_names if name in pred_map)
+                    missing = len(obs_names) - matched
+                    print(
+                        f"[{index}/{len(adata_paths)}] Index alignment: {matched}/{len(obs_names)} matched, "
+                        f"{missing} missing, {len(pred_indices)} predicted"
+                    )
+                    embeddings = np.zeros((len(obs_names), dim), dtype=pred_embeddings.dtype)
+                    for j, name in enumerate(obs_names):
+                        if name in pred_map:
+                            embeddings[j] = pred_map[name]
+
+                if npz_save_path is not None:
+                    np.savez_compressed(npz_save_path, embeddings=embeddings)
+                    print(f"[{index}/{len(adata_paths)}] Embeddings saved to {npz_save_path}")
+
+                adata.obsm[obsm_key] = embeddings
+                adata.write_h5ad(output_h5ad)
+                print(f"[{index}/{len(adata_paths)}] Saved h5ad to {output_h5ad}")
+            except Exception as e:
+                print(f"[{index}/{len(adata_paths)}] ERROR processing {adata_path}: {e}")
+                continue
+
+            del adata, pred, pred_indices, pred_embeddings, embeddings
     finally:
         del pipeline
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
