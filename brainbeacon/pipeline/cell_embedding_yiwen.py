@@ -1,4 +1,3 @@
-# cell_embedding.py - Yifeng's version
 import os
 import time
 import torch
@@ -6,20 +5,13 @@ import joblib
 import shutil
 import torch.nn as nn
 import numpy as np
-import scanpy as sc
-import copy
-
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from typing import Union, List
 
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.tokenizer import set_seed
-from brainbeacon.tokenizer import tokenize_adata_in_memory
-from brainbeacon.configs.stage1_config import stage1_config as default_config1
-from brainbeacon.configs.stage2_config import stage2_config as default_config2
-from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
+from brainbeacon.configs.stage1_config import stage1_config
 
 
 def normalize_brainbeacon_model_config(model_config: dict) -> dict:
@@ -296,9 +288,40 @@ class ZeroshotJoblibDataset(Dataset):
                     ["unknown"],
                     empty_tensor,
                     empty_tensor,
+                    empty_tensor
                 )
             else:
                 return self.__getitem__(idx + 1)
+
+class InMemoryTokenDataset(Dataset):
+    """In-memory token dataset for fast inference (no joblib I/O).
+
+    Works with standard DataLoader batching (single-cell granularity).
+    """
+
+    def __init__(self, token_dict: dict, max_len: int = 1000):
+        self.real_indices = token_dict["real_indices"][:, :max_len].astype(np.int32)
+        self.attention_mask = token_dict["attention_mask"][:, :max_len]
+        self.connect_comp = token_dict["connect_comp"][:, :max_len].astype(np.int32)
+        self.rna_type = token_dict["rna_type"][:, :max_len].astype(np.int32)
+        self.neighbor_gene_dist = token_dict["neighbor_gene_dist"][:, :max_len].astype(np.int32)
+        self.exp = token_dict["exp"][:, :max_len].astype(np.float32)
+        self.cell_raw_index = token_dict["cell_raw_index"]
+
+    def __len__(self):
+        return self.real_indices.shape[0]
+
+    def __getitem__(self, idx):
+        return (
+            torch.as_tensor(self.real_indices[idx], dtype=torch.long),
+            torch.as_tensor(self.attention_mask[idx], dtype=torch.bool),
+            torch.as_tensor(self.connect_comp[idx], dtype=torch.long),
+            torch.as_tensor(self.rna_type[idx], dtype=torch.long),
+            str(self.cell_raw_index[idx]),
+            torch.as_tensor(self.neighbor_gene_dist[idx], dtype=torch.float),
+            torch.as_tensor(self.exp[idx], dtype=torch.float),
+        )
+
 
 class CellEmbeddingPipeline:
     def __init__(self, pretrain_ckpt: str, model_config: dict, device: Union[str, torch.device] = 'cpu'):
@@ -313,48 +336,31 @@ class CellEmbeddingPipeline:
 
     def initialize_model(self):
         """
-        Initialize the model and load checkpoint weights when available.
+        Initialize the model_raw and compute its size.
         """
         self.model = BrainBeaconCellCluster(self.model_config).to(self.device)
-
-        if not self.pretrain_ckpt:
-            return
-
-        strict_load = self.model_config.get("strict_load", False)
-
-        try:
-            ckpt = torch.load(self.pretrain_ckpt, map_location=self.device)
-            pretrained_dict = ckpt["model_state_dict"]
-
-            if strict_load:
-                self.model.pretrain_model.load_state_dict(pretrained_dict)
-                print(f"Loaded pretrain_model checkpoint (strict): {self.pretrain_ckpt}")
-                return
-
-            model_dict = self.model.pretrain_model.state_dict()
-            compatible_dict = {}
-            skipped = []
-
-            for k, v in pretrained_dict.items():
-                if k in model_dict and v.shape == model_dict[k].shape:
-                    compatible_dict[k] = v
-                elif k in model_dict:
-                    skipped.append(
-                        f"{k}: ckpt {tuple(v.shape)} vs model {tuple(model_dict[k].shape)}"
-                    )
-
-            if skipped:
-                print(f"[Warning] Skipped {len(skipped)} shape-mismatched params:")
-                for s in skipped:
-                    print(f"  {s}")
-
-            model_dict.update(compatible_dict)
-            self.model.pretrain_model.load_state_dict(model_dict)
-            print(f"Loaded pretrain_model checkpoint (compatible): {self.pretrain_ckpt}")
-
-        except Exception as e:
-            print(f"Error loading checkpoint: {e}")
-            raise
+        if self.pretrain_ckpt:
+            try:
+                ckpt = torch.load(self.pretrain_ckpt, map_location=self.device)
+                pretrained_dict = ckpt['model_state_dict']
+                model_dict = self.model.pretrain_model.state_dict()
+                compatible_dict = {}
+                skipped = []
+                for k, v in pretrained_dict.items():
+                    if k in model_dict and v.shape == model_dict[k].shape:
+                        compatible_dict[k] = v
+                    elif k in model_dict:
+                        skipped.append(f"{k}: ckpt {v.shape} vs model {model_dict[k].shape}")
+                if skipped:
+                    print(f"[Warning] Skipped {len(skipped)} shape-mismatched params (will use init weights):")
+                    for s in skipped:
+                        print(f"  {s}")
+                model_dict.update(compatible_dict)
+                self.model.pretrain_model.load_state_dict(model_dict)
+                print(f"Loaded pretrain_model checkpoint: {self.pretrain_ckpt}")
+            except Exception as e:
+                print(f"Error loading checkpoint: {e}")
+                raise
 
     def load_dataset(self, data_paths: List[str]):
         """
@@ -626,248 +632,12 @@ class CellEmbeddingPipeline:
             attention_dtype=attention_dtype
         )
 
-class InMemoryTokenDataset(Dataset):
-    """
-    In-memory token dataset for fast Stage1 inference.
-
-    Expected token_dict keys
-    ------------------------
-    - real_indices
-    - attention_mask
-    - connect_comp
-    - rna_type
-    - neighbor_gene_dist
-    - exp
-    - cell_raw_index
-    """
-
-    def __init__(self, token_dict: dict, max_len: int = 1000):
-        # Pre-convert arrays to torch tensors once in __init__
-        self.real_indices = torch.from_numpy(
-            token_dict["real_indices"][:, :max_len].astype(np.int64, copy=False)
-        )
-        self.attention_mask = torch.from_numpy(
-            token_dict["attention_mask"][:, :max_len].astype(np.bool_, copy=False)
-        )
-        self.connect_comp = torch.from_numpy(
-            token_dict["connect_comp"][:, :max_len].astype(np.int64, copy=False)
-        )
-        self.rna_type = torch.from_numpy(
-            token_dict["rna_type"][:, :max_len].astype(np.int64, copy=False)
-        )
-        self.neighbor_gene_dist = torch.from_numpy(
-            token_dict["neighbor_gene_dist"][:, :max_len].astype(np.float32, copy=False)
-        )
-        self.exp = torch.from_numpy(
-            token_dict["exp"][:, :max_len].astype(np.float32, copy=False)
-        )
-
-        # Keep raw index as a numpy array / python list, no per-sample str conversion here
-        self.cell_raw_index = np.asarray(token_dict["cell_raw_index"])
-
-    def __len__(self):
-        return self.real_indices.shape[0]
-
-    def __getitem__(self, idx):
-        return (
-            self.real_indices[idx],
-            self.attention_mask[idx],
-            self.connect_comp[idx],
-            self.rna_type[idx],
-            self.cell_raw_index[idx],
-            self.neighbor_gene_dist[idx],
-            self.exp[idx],
-        )
-
-def run_bb_inference_fast(
-    adata,
-    gene_dict_path: str,
-    config_train: dict,
-    pretrain_ckpt: str,
-    device,
-    species: str,
-    assay: str,
-    batch_size: int = 64,
-    num_workers: int = 4,
-    use_hvg: bool = True,
-    n_hvg: int = 1000,
-    use_dev_abs: bool = False,
-    save_path: str = None,
-):
-    """
-    Fast in-memory BrainBeacon inference.
-
-    This path removes intermediate joblib token I/O and directly runs:
-    adata -> in-memory tokenization -> dataloader -> BrainBeacon inference.
-
-    Returns
-    -------
-    ordered_embeddings : np.ndarray
-        Stage1 embeddings aligned to adata.obs_names.
-    """
-
-    time0 = time.time()
-    config_train = normalize_brainbeacon_model_config(config_train)
-
-    # ====== 1. In-memory tokenization ======
-    print("[Stage1 memory] Tokenizing in memory...")
-    t_tok = time.time()
-    token_dict = tokenize_adata_in_memory(
-        adata,
-        gene_dict_path,
-        species=species,
-        assay=assay,
-        use_hvg=use_hvg,
-        n_hvg=n_hvg,
-        use_dev_abs=use_dev_abs,
-    )
-    print(
-        f"[Stage1 memory] Tokenization done: "
-        f"{token_dict['real_indices'].shape[0]} cells, "
-        f"{time.time() - t_tok:.1f}s"
-    )
-
-    # ====== 2. Build dataset and dataloader ======
-    dataset = InMemoryTokenDataset(token_dict, max_len=1000)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-
-    # ====== 3. Model inference ======
-    print(f"[Stage1 memory] Running inference (batch_size={batch_size})...")
-    pipeline = CellEmbeddingPipeline(
-        pretrain_ckpt=pretrain_ckpt,
-        model_config=config_train,
-        device=device,
-    )
-    pipeline.model.eval()
-
-    # esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu")
-    esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu").to(device)
-
-    pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
-    weight_mode = config_train.get("weight_mode", "expression")
-    cd_weight = config_train.get("cd_weight", 0.02)
-    expr_mode = config_train.get("expr_mode", None)
-
-    all_indices = []
-    all_embeddings = []
-
-    # with torch.no_grad():
-    with torch.inference_mode():
-        for real_indices, attention_mask, connect_comp, rna_type, cell_raw_idx, neighbor_gene_distribution, exp in tqdm(
-                dataloader,
-                desc="[Stage1 memory] Inference",
-        ):
-            real_indices = real_indices.to(device, non_blocking=True)
-            attention_mask = attention_mask.to(device, non_blocking=True)
-            connect_comp = connect_comp.to(device, non_blocking=True)
-            rna_type = rna_type.to(device, non_blocking=True)
-            neighbor_gene_distribution = neighbor_gene_distribution.to(device, non_blocking=True).long()
-            exp = exp.to(device, non_blocking=True)
-
-            real_indices_view = real_indices.view(-1).long()
-            esm_embedding = torch.index_select(
-                esm_embedding_map,
-                dim=0,
-                index=real_indices_view,
-            )
-            esm_embedding = esm_embedding.view(
-                real_indices.shape[0],
-                real_indices.shape[1],
-                esm_embedding.shape[-1],
-            )
-
-            # better than torch.where(...)
-            sequence_mask = (~attention_mask).long()
-
-            output = pipeline.model(
-                real_indices,
-                connect_comp,
-                rna_type,
-                attention_mask,
-                esm_embedding,
-                neighbor_gene_distribution,
-                sequence_mask,
-            )
-
-            # ====== Pooling on GPU ======
-            if weight_mode == "expression":
-                aux = torch.zeros((exp.shape[0], 2), device=exp.device)
-                cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device)
-                gene_expr = exp[:, 3:]
-
-                if expr_mode == "log1pnorm":
-                    gene_expr = torch.log1p(gene_expr) / torch.log(
-                        torch.tensor(2.0, device=gene_expr.device)
-                    )
-
-                gene_expr = gene_expr / gene_expr.sum(dim=1, keepdim=True).clamp(min=1e-6)
-                exp_full = torch.cat([aux, cd, gene_expr], dim=1)
-                expr_weights = exp_full[:, pool_skip_tokens:]
-            else:
-                expr_weights = None
-
-            output = masked_weighted_pooling(
-                output[:, pool_skip_tokens:, :],
-                sequence_mask[:, pool_skip_tokens:],
-                expr_weights=expr_weights,
-                weight_mode=weight_mode,
-                weight_decay=config_train.get("weight_decay", 0.998),
-                temperature=config_train.get("temperature", 300),
-            )
-
-            output = output.detach().cpu()
-
-            all_indices.extend(cell_raw_idx)
-            all_embeddings.append(output.numpy())
-
-    pred_indices = np.array(all_indices)
-    pred_embeddings = np.concatenate(all_embeddings, axis=0)
-
-    # ====== 4. Order check ======
-    obs_names = np.array(adata.obs_names)
-
-    if np.array_equal(pred_indices, obs_names):
-        print("obs_names and pred_indices are in the same order.")
-        ordered_embeddings = pred_embeddings
-    elif len(pred_indices) == len(obs_names):
-        idx_map = {name: i for i, name in enumerate(pred_indices)}
-        try:
-            order = [idx_map[name] for name in obs_names]
-        except KeyError as e:
-            raise ValueError(
-                f"Embedding order check failed: missing cell id {e} in predicted outputs."
-            ) from e
-        ordered_embeddings = pred_embeddings[order]
-    else:
-        raise ValueError(
-            "Embedding order check failed: the number of predicted embeddings does not match "
-            f"adata.obs_names ({len(pred_indices)} vs {len(obs_names)})."
-        )
-
-    # ====== 5. Save ======
-    if save_path is not None:
-        np.savez_compressed(save_path, embeddings=ordered_embeddings)
-        print(f"[Stage1 memory] Embeddings saved to {save_path}")
-
-    elapsed = time.time() - time0
-    print(f"[Stage1 memory] Total time: {elapsed / 60:.2f} min")
-
-    del pipeline, esm_embedding_map
-    torch.cuda.empty_cache()
-
-    return ordered_embeddings
 
 def run_tokenization(
-    adata,
-    gene_dict_path,
+    adata_path,
     bb_token_dir,
-    species,
+    gene_dict_path,
+    specie,
     assay,
     use_hvg=True,
     n_hvg=1000,
@@ -911,9 +681,9 @@ def run_tokenization(
     start = time.time()
     print("No existing tokenized bundles found. Running tokenization...")
     tokenization_h5ad(
-        adata,
+        adata_path,
         gene_dict_path,
-        species=species,
+        specie=specie,
         assay=assay,
         output_path=bb_token_dir,
         use_hvg=use_hvg,
@@ -932,7 +702,7 @@ def run_tokenization(
     return bb_token_dir
 
 
-def run_stage1_inference(
+def run_bb_inference(
     adata,
     token_data_path,
     config_train,
@@ -988,211 +758,191 @@ def run_stage1_inference(
     torch.cuda.empty_cache()
     return ordered_embeddings
 
-def run_stage1_pipeline(
+
+def run_bb_inference_fast(
     adata,
     gene_dict_path: str,
-    stage1_ckpt_path: str,
     config_train: dict,
-    species: str,
+    pretrain_ckpt: str,
+    device,
+    specie: str,
     assay: str,
-    token_output_dir: str | None = None,
-    save_embedding_path: str | None = None,
-    stage1_mode: str = "disk",
-    device=None,
+    batch_size: int = 64,
+    num_workers: int = 4,
+    use_hvg: bool = True,
+    n_hvg: int = 1000,
+    use_dev_abs: bool = False,
+    save_path: str = None,
 ):
+    """Fast in-memory BrainBeacon inference: adata in, embeddings out.
+
+    Eliminates all intermediate joblib I/O. Supports dynamic batch size.
+    Produces identical results to run_tokenization() + run_bb_inference().
     """
-    Run Stage1 pipeline for BrainBeacon.
+    from brainbeacon.tokenizer_fast import tokenize_adata_inmemory
 
-    Supported modes
-    ---------------
-    - "disk":
-        Tokenize to disk with joblib bundles, then run disk-based inference.
-    - "memory":
-        Run in-memory fast inference without writing token bundles to disk.
-
-    Parameters
-    ----------
-    adata : anndata.AnnData
-        Input AnnData object.
-    gene_dict_path : str
-        Path to gene dictionary used by Stage1 tokenization.
-    stage1_ckpt_path : str
-        Path to pretrained BrainBeacon checkpoint.
-    config_train : dict
-        Stage1 config dictionary.
-    species : str
-        Species identifier.
-    assay : str
-        Assay / platform identifier.
-    token_output_dir : str or None, optional
-        Directory for saving tokenized joblib bundles in disk mode.
-    save_embedding_path : str or None, optional
-        Path for saving Stage1 embeddings.
-    stage1_mode : str, default="disk"
-        Stage1 execution mode. One of {"disk", "memory"}.
-    device : torch.device or str or None, optional
-        Device used for inference.
-
-    Returns
-    -------
-    adata : anndata.AnnData
-        AnnData with `adata.obsm["bb_emb"]`.
-    """
-    if adata is None:
-        raise ValueError("`adata` must be provided for Stage1 pipeline.")
-    if gene_dict_path is None:
-        raise ValueError("`gene_dict_path` must be provided for Stage1 pipeline.")
-    if stage1_ckpt_path is None:
-        raise ValueError("`stage1_ckpt_path` must be provided for Stage1 pipeline.")
-    if config_train is None:
-        raise ValueError("`config_train` must be provided for Stage1 pipeline.")
-
-    if stage1_mode not in {"disk", "memory"}:
-        raise ValueError(
-            f"Unsupported `stage1_mode`: {stage1_mode}. "
-            "Currently supported modes are {'disk', 'memory'}."
-        )
-
+    time0 = time.time()
     config_train = normalize_brainbeacon_model_config(config_train)
 
-    force_tokenize = config_train.get("force_tokenize", True)
-    use_hvg = config_train.get("use_hvg", True)
-    n_hvg = config_train.get("n_hvg", 1000)
-    use_dev_abs = config_train.get("use_dev_abs", True)
+    # Step 1: In-memory tokenization
+    print("[Fast] Tokenizing in memory...")
+    t_tok = time.time()
+    token_dict = tokenize_adata_inmemory(
+        adata, gene_dict_path, specie=specie, assay=assay,
+        use_hvg=use_hvg, n_hvg=n_hvg, use_dev_abs=use_dev_abs,
+    )
+    print(f"[Fast] Tokenization done: {token_dict['real_indices'].shape[0]} cells, "
+          f"{time.time() - t_tok:.1f}s")
 
-    # ====== Disk mode ======
-    if stage1_mode == "disk":
-        if token_output_dir is None:
-            raise ValueError("`token_output_dir` must be provided when `stage1_mode='disk'`.")
+    # Step 2: Build dataset & dataloader
+    dataset = InMemoryTokenDataset(token_dict, max_len=1000)
+    dataloader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
+    )
 
-        stage1_start_time = time.time()
+    # Step 3: Model inference
+    print(f"[Fast] Running inference (batch_size={batch_size})...")
+    pipeline = CellEmbeddingPipeline(pretrain_ckpt=pretrain_ckpt, model_config=config_train, device=device)
+    pipeline.model.eval()
 
-        print("====== Stage1: Tokenization (disk) ======")
-        token_data_path = run_tokenization(
-            adata=adata,
-            gene_dict_path=gene_dict_path,
-            bb_token_dir=token_output_dir,
-            species=species,
-            assay=assay,
-            force_tokenize=force_tokenize,
-            use_hvg=use_hvg,
-            n_hvg=n_hvg,
-            use_dev_abs=use_dev_abs,
+    esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu")
+
+    pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
+    weight_mode = config_train.get("weight_mode", "expression")
+    cd_weight = config_train.get("cd_weight", 0.02)
+    expr_mode = config_train.get("expr_mode", None)
+
+    all_indices = []
+    all_embeddings = []
+
+    with torch.no_grad():
+        for real_indices, attention_mask, connect_comp, rna_type, cell_raw_idx, neighbor_gene_distribution, exp in tqdm(
+            dataloader, desc="[Fast] Inference"
+        ):
+            # Standard DataLoader output: (batch_size, seq_len), no [0] unwrapping needed
+            real_indices_view = real_indices.view(-1).long()
+            neighbor_gene_distribution = neighbor_gene_distribution.long()
+
+            esm_embedding = torch.index_select(esm_embedding_map, dim=0, index=real_indices_view)
+            esm_embedding = esm_embedding.view(real_indices.shape[0], real_indices.shape[1], esm_embedding.shape[-1])
+            sequence_mask = torch.where(real_indices == 1, torch.zeros_like(real_indices), torch.ones_like(real_indices))
+
+            real_indices = real_indices.to(device)
+            attention_mask = attention_mask.to(device)
+            connect_comp = connect_comp.to(device)
+            rna_type = rna_type.to(device)
+            esm_embedding = esm_embedding.to(device)
+            neighbor_gene_distribution = neighbor_gene_distribution.to(device)
+
+            output = pipeline.model(
+                real_indices, connect_comp, rna_type, attention_mask,
+                esm_embedding, neighbor_gene_distribution, sequence_mask,
+            )
+            output = output.detach().cpu()
+
+            # Pooling (same logic as infer())
+            if weight_mode == "expression":
+                aux = torch.zeros((exp.shape[0], 2), device=exp.device)
+                cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device)
+                gene_expr = exp[:, 3:]
+                if expr_mode == "log1pnorm":
+                    gene_expr = torch.log1p(gene_expr) / torch.log(torch.tensor(2.0, device=gene_expr.device))
+                gene_expr = gene_expr / gene_expr.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                exp_full = torch.cat([aux, cd, gene_expr], dim=1)
+                expr_weights = exp_full[:, pool_skip_tokens:]
+            else:
+                expr_weights = None
+
+            output = masked_weighted_pooling(
+                output[:, pool_skip_tokens:, :],
+                sequence_mask[:, pool_skip_tokens:],
+                expr_weights=expr_weights,
+                weight_mode=weight_mode,
+                weight_decay=config_train.get("weight_decay", 0.998),
+                temperature=config_train.get("temperature", 300),
+            )
+
+            # cell_raw_idx is a list of strings from DataLoader default collate
+            all_indices.extend(cell_raw_idx)
+            all_embeddings.append(output.numpy())
+
+    pred_indices = np.array(all_indices)
+    pred_embeddings = np.concatenate(all_embeddings, axis=0)
+
+    # Order check
+    obs_names = np.array(adata.obs_names)
+    if np.array_equal(pred_indices, obs_names):
+        ordered_embeddings = pred_embeddings
+    elif len(pred_indices) == len(obs_names):
+        # Reorder to match adata.obs_names
+        idx_map = {name: i for i, name in enumerate(pred_indices)}
+        order = [idx_map[name] for name in obs_names]
+        ordered_embeddings = pred_embeddings[order]
+    else:
+        raise ValueError(
+            f"Cell count mismatch: {len(pred_indices)} predicted vs {len(obs_names)} in adata."
         )
 
-        print("====== Stage1: Inference (disk) ======")
-        if save_embedding_path is not None and os.path.exists(save_embedding_path) and not force_tokenize:
-            print(f"Skipping stage1 inference. Found existing file: {save_embedding_path}")
-            bb_emb = np.load(save_embedding_path)["embeddings"]
-        else:
-            bb_emb = run_stage1_inference(
-                adata=adata,
-                config_train=config_train,
-                pretrain_ckpt=stage1_ckpt_path,
-                token_data_path=token_data_path,
-                save_path=save_embedding_path,
-                device=device,
-            )
+    if save_path is not None:
+        np.savez_compressed(save_path, embeddings=ordered_embeddings)
+        print(f"[Fast] Embeddings saved to {save_path}")
 
-            if save_embedding_path is not None:
-                print(f"Stage1 inference complete. Saved to: {save_embedding_path}")
-            else:
-                print("Stage1 inference complete.")
+    elapsed = time.time() - time0
+    print(f"[Fast] Total time: {elapsed / 60:.2f} min")
 
-        adata.obsm["bb_emb"] = bb_emb
-        stage1_end_time = time.time()
-        print(f"[Stage1 total - disk] Time cost: {(stage1_end_time - stage1_start_time):.2f} sec")
-        return adata
-
-    # ====== Memory mode ======
-    if stage1_mode == "memory":
-        stage1_start_time = time.time()
-
-        print("====== Stage1: Inference (memory) ======")
-        if save_embedding_path is not None and os.path.exists(save_embedding_path) and not force_tokenize:
-            print(f"Skipping stage1 inference. Found existing file: {save_embedding_path}")
-            bb_emb = np.load(save_embedding_path)["embeddings"]
-        else:
-            bb_emb = run_bb_inference_fast(
-                adata=adata,
-                gene_dict_path=gene_dict_path,
-                config_train=config_train,
-                pretrain_ckpt=stage1_ckpt_path,
-                device=device,
-                species=species,
-                assay=assay,
-                batch_size=config_train.get("batch_size", 64),
-                num_workers=config_train.get("num_workers", 4),
-                use_hvg=use_hvg,
-                n_hvg=n_hvg,
-                use_dev_abs=use_dev_abs,
-                save_path=save_embedding_path,
-            )
-
-            if save_embedding_path is not None:
-                print(f"Stage1 inference complete. Saved to: {save_embedding_path}")
-            else:
-                print("Stage1 inference complete.")
-
-        adata.obsm["bb_emb"] = bb_emb
-        stage1_end_time = time.time()
-        print(f"[Stage1 total - memory] Time cost: {(stage1_end_time - stage1_start_time):.2f} sec")
-        return adata
+    del pipeline, esm_embedding_map
+    torch.cuda.empty_cache()
+    return ordered_embeddings
 
 
-class DictEncoder:
-    def __init__(self, mapping):
-        self.mapping = mapping
-
-    def transform(self, values):
-        return np.asarray([self.mapping[v] for v in values], dtype=np.int64)
-
-
-class IdentityEncoder:
-    def transform(self, values):
-        return np.asarray(values, dtype=np.int64)
-
-
-def build_covariate_encoders(config):
-    cov_fields = config.get("covariate_fields")
-    if not cov_fields:
-        return None
-    return {field: IdentityEncoder() for field in cov_fields}
-
-
-def run_stage2_pipeline(
-        adata,
-        stage1_ckpt_path,
-        stage2_ckpt_path=None,
-        config=None,
-        do_fit=True,
-        fit_epochs=500,
-        use_single_slice=False,
-        use_spatial=True,
-        save_model_path=None,
-        save_embedding_path=None,
-        device=None,
+def run_bbcellformer_recon(
+    adata,
+    bb_embedding_path,            # path to .npz embedding file
+    bb_pretrain_path,             # path to BB encoder backbone weights
+    cellformer_version,          # prefix like 'cellformer', used to find .yaml/.pt
+    cellformer_directory,        # path to folder with pretrained CellFormer model_raw files
+    device,
+    cellformer_pretrain_path=None,  # Not used here, but required by the pipeline
+    use_batch=True,
+    use_spatial=True,
+    do_fit=True,
+    fit_epochs=500,  # can be set in the pipeline
+    slice_sample=False,  # NEW
+    enc_mod="flowformer",
+    path_dict: dict = None,
+    mask_type="hidden",  # 'hidden' or 'input'
+    output_attentions=False,  # whether to return attention weights
+    save_embedding_path=None,  # Optional now
+    save_model_path=None,  # optional: save .pt model_raw weights
 ):
-    if config is None:
-        raise ValueError("`config` must be provided for Stage2 pipeline.")
+    from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
+
     # Load AnnData file
     data = adata.copy()
     data.obs_names_make_unique()
     # set train/valid split
+    np.random.seed(42)
     data.obs['valid_split'] = 'train'
     if 'slice' not in data.obs.columns:
         data.obs['slice'] = 'default'
-    for slice_id in data.obs['slice'].unique():
-        idx = data.obs['slice'] == slice_id
+    for batch_id in data.obs['slice'].unique():
+        idx = data.obs['slice'] == batch_id
         cell_idx = np.where(idx)[0]
         n_valid = max(1, int(len(cell_idx) * 0.1))  # Ensure at least one cell is selected for validation
         valid_cells = np.random.choice(cell_idx, n_valid, replace=False)
         data.obs.iloc[valid_cells, data.obs.columns.get_loc('valid_split')] = 'valid'
 
-    # Use slice as batch/group identifier for Stage2
-    data.obs['batch'] = data.obs['slice']
+    # load brainbeacon embeddings
+    data.obsm['bb_emb'] = np.load(bb_embedding_path)['embeddings']
+
+    # Add batch info if enabled
+    if use_batch:
+        data.obs['batch'] = data.obs['slice']
 
     if use_spatial and "spatial" in data.obsm.keys():
+        all_coords = []
+
         for batch_id in data.obs['batch'].unique():
             idx = data.obs['batch'] == batch_id
             spatial = data.obsm['spatial'][idx]
@@ -1204,31 +954,45 @@ def run_stage2_pipeline(
             data.obs.loc[idx, 'x_FOV_px'] = normalized[:, 0]
             data.obs.loc[idx, 'y_FOV_px'] = normalized[:, 1]
 
+    # Initialize cellformer embedding pipeline
+    overwrite_config = {
+        "name": f"bb_{enc_mod}",
+        "enc_mod": enc_mod,
+        'objective': 'nb',
+        # 'objective': 'imputation',
+        'mask_node_rate': 0.95,
+        'mask_feature_rate': 0.25,
+        'max_batch_size': 2000,
+        'sampling_mode': "spatial", # random
+        'center_ratio': 0.5,
+        'knn_k': 10,
+        'mask_type': mask_type,
+        # "use_hidden_pe": False,
+        "use_hidden_pe": True,
+        "pe_type": 'sin',
+        "use_spatial_patch": False,
+        # "pe_type": 'fourier',
+        # 'mask_type': 'input',
+    }
     # clear GPU memory before re-initializing the pipeline
     torch.cuda.empty_cache()
     pipeline = ReconstructPipeline(
-        config=config,
-        stage1_ckpt_path=stage1_ckpt_path,
-        stage2_ckpt_path=stage2_ckpt_path,
-        use_pretrain=config.get("use_pretrain", True),
-    )
-    PLATFORM_MAP = {
-        "merfish": 0,
-        "xenium": 1,
-        "starmap": 2,
-        "slideseqv2": 3,
-        "stereo": 4,
-    }
-
+        pretrain_prefix=cellformer_version,
+        overwrite_config=overwrite_config,
+        pretrain_directory=cellformer_directory,
+        bb_pretrain_path=bb_pretrain_path,
+        cellformer_pretrain_path=cellformer_pretrain_path,
+        path_dict=path_dict,
+        use_pretrain=True)
     if do_fit:
         # Only sample one slice if requested
-        if use_single_slice:
+        if slice_sample:
             # np.random.seed(42)
-            rng = np.random.RandomState(None)  # use local random
+            rng = np.random.RandomState(None)  # 使用局部随机性，每次运行都不一样
             chosen_slice = rng.choice(data.obs['slice'].unique())
             fit_data = data[data.obs['slice'] == chosen_slice].copy()
             print(f"Training only on slice: {chosen_slice} ({fit_data.n_obs} cells)")
-            MAX_CELLS = 50000
+            MAX_CELLS = 20000
             if fit_data.n_obs > MAX_CELLS:
                 print(f"[Warning] Too many cells in slice ({fit_data.n_obs}), subsampling to {MAX_CELLS}")
                 sampled_indices = np.random.choice(fit_data.n_obs, MAX_CELLS, replace=False)
@@ -1237,64 +1001,42 @@ def run_stage2_pipeline(
 
         else:
             fit_data = data.copy()
-
-        covariate_fields = config.get("covariate_fields", None)
-        if covariate_fields is not None:
-            if "platform_cov" in covariate_fields and "platform_cov" not in fit_data.obs.columns:
-                if "platform" in fit_data.obs.columns:
-                    fit_data.obs["platform_cov"] = fit_data.obs["platform"].map(PLATFORM_MAP).astype(np.int64)
-            available_covariates = [c for c in covariate_fields if c in fit_data.obs.columns]
-            missing_covariates = [c for c in covariate_fields if c not in fit_data.obs.columns]
-
-            if len(missing_covariates) > 0:
-                print(f"[Warning] Missing covariate fields in obs, drop them: {missing_covariates}")
-            for c in available_covariates:
-                fit_data.obs[c] = fit_data.obs[c].astype(np.int64)
-
-            covariate_fields = available_covariates if len(available_covariates) > 0 else None
-            config["covariate_fields"] = covariate_fields
-            print(f"Using covariate fields: {covariate_fields}")
-
-        covariate_encoders = build_covariate_encoders(config)
-        train_config = {
-            'epochs': fit_epochs,
-            'max_batch_size': config['max_batch_size'],
-            'use_patch': config.get("use_patch", True),
-            'knn_k': config.get("knn_k", 10),
-        }
         pipeline.fit(
             fit_data,  # AnnData object
-            config_override=train_config,
+            train_config={'epochs': fit_epochs, "use_patch": False},
             split_field='valid_split',
             train_split='train',
             valid_split='valid',
-            covariate_fields=covariate_fields,
-            covariate_encoders=covariate_encoders,
             device=device
         )
     inference_config = {
-        'max_eval_batch_size': config['max_eval_batch_size'],
-        'use_patch': config.get("eval_use_patch", True),
-        'knn_k': config.get("eval_knn_k", 5),
-        'center_ratio': config.get("eval_center_ratio", 0.5),
+        'lr': 5e-4,
+        'wd': 1e-6,
+        'scheduler': 'plat',
+        'epochs': 100,
+        'max_eval_batch_size': 1000,
+        'use_patch': False,
+        # 'use_patch': True,
+        'patience': 5,
+        'workers': 0,
     }
     result = pipeline.predict(
         data,
         inference_config=inference_config,
-        # output_attentions=output_attentions,
+        output_attentions=output_attentions,
         device=device
     )
     pred = result['pred']
     latent = result['latent']
-    # attention = result.get('attention', None)
+    attention = result.get('attention', None)
 
     target_genes = pipeline.target_genes  # this was set inside predict()
     data = data[:, target_genes].copy()  # now data.var.index == target_genes
 
     data.obsm['X_emb'] = latent.cpu().numpy()  # Store embeddings in AnnData object
     data.obsm['X_pred'] = pred.cpu().numpy()  # Store predicted gene
-    # if output_attentions and attention is not None:
-    #     data.uns['attention'] = attention.cpu().numpy()
+    if output_attentions and attention is not None:
+        data.uns['attention'] = attention.cpu().numpy()
 
     if save_model_path is not None:
         torch.save(pipeline.model.state_dict(), save_model_path)
@@ -1306,213 +1048,208 @@ def run_stage2_pipeline(
 
     return data
 
-
-def merge_config(default_config: dict, new_config: dict | None = None) -> dict:
-    """
-    Merge a user-provided config into the default config.
-    """
-    config = copy.deepcopy(default_config)
-    if new_config is not None:
-        config.update(new_config)
-    return config
-
-def resolve_pipeline_paths(
+def run_bbcellformer_pipeline(
+    adata_path: str,
+    specie: str,
+    assay: str,
+    gene_dict_path: str,
+    stage1_ckpt_path: str,
+    stage2_ckpt_path: str,
     output_dir: str,
     output_prefix: str,
-    save_model: bool = True,
-    save_model_path: str | None = None,
-):
-    """
-    Resolve default output paths for the full BrainBeacon pipeline.
-    """
-    if output_dir is None:
-        raise ValueError("`output_dir` must be provided.")
-    if output_prefix is None:
-        raise ValueError("`output_prefix` must be provided.")
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    stage1_token_dir = os.path.join(output_dir, f"{output_prefix}_tokens")
-    stage1_embedding_path = os.path.join(output_dir, f"{output_prefix}_stage1_embeddings.npz")
-    stage2_embedding_path = os.path.join(output_dir, f"{output_prefix}_stage2_embeddings.npz")
-
-    if save_model:
-        if save_model_path is None:
-            stage2_model_path = os.path.join(output_dir, f"{output_prefix}_cellformer.pt")
-        else:
-            stage2_model_path = save_model_path
-    else:
-        stage2_model_path = None
-
-    return {
-        "stage1_token_dir": stage1_token_dir,
-        "stage1_embedding_path": stage1_embedding_path,
-        "stage2_embedding_path": stage2_embedding_path,
-        "stage2_model_path": stage2_model_path,
-    }
-
-def run_brainbeacon_pipeline(
-    adata=None,
-    adata_path: str | None = None,
-    species: str = None,
-    assay: str = None,
-    gene_dict_path: str = None,
-    stage1_ckpt_path: str | None = None,
-    stage2_ckpt_path: str | None = None,
-    output_dir: str | None = None,
-    output_prefix: str | None = None,
-    stage1_config: dict | None = None,
-    stage2_config: dict | None = None,
+    path_dict: dict = None,
+    config_override: dict = None,
+    n_hvg: int = 1000,
+    cd_weight: float = 0.02,
+    use_hvg: bool = True,
+    use_batch: bool = True,
+    use_spatial: bool = True,
+    weight_mode: str = "expression",
+    force_tokenize: bool = True,
+    use_dev_abs: bool = False,
     do_fit: bool = True,
     fit_epochs: int = 100,
-    use_single_slice: bool = False,
-    stage1_mode: str = "memory",
+    slice_sample=False,  # select one slice for training
+    enc_mod="flowformer",
+    mask_type="hidden",  # 'hidden' or 'input'
+    output_attentions=False,  # whether to return attention weights
+    save_model: bool = True,  # whether to save the model_raw
+    save_model_path: str = None,
+    save_embedding_path: str = None,
     device=None,
     seed: int = 42,
-    deterministic: bool = True,
-    save_model: bool = True,
-    save_model_path: str | None = None,
+    deterministic: bool = True
 ):
-    """
-    Run the full two-stage BrainBeacon pipeline.
+    """Run the end-to-end BrainBeacon + CellFormer pipeline and return an updated AnnData.
 
-    This is the top-level user-facing function for the BrainBeacon workflow.
-
-    Stage 1 (intra-cell modeling)
-    -----------------------------
-    1. Tokenize gene expression into sequence-like model inputs.
-    2. Run pretrained BrainBeacon inference to generate cell-level embeddings.
-
-    Stage 2 (inter-cell modeling)
-    -----------------------------
-    1. Perform CellFormer-based spatial / inter-cell modeling.
-    2. Optionally fit or fine-tune the stage 2 model.
-    3. Generate refined latent representations.
+    This function performs:
+    1) Load AnnData from ``adata_path`` and set ``adata.obs["platform"] = assay``.
+    2) Tokenization (BrainBeacon tokenizer) and save token files under ``output_dir``.
+    3) BrainBeacon inference to produce cell embeddings (saved as ``*_bb_embeddings.npz``).
+    4) CellFormer reconstruction / fitting and save final embeddings and model (optional).
 
     Parameters
     ----------
-    adata : anndata.AnnData, optional
-        Input AnnData object. If None, `adata_path` must be provided.
-    adata_path : str or None, optional
-        Path to the input AnnData file.
-    species : str or None, optional
-        Species identifier used for tokenization and metadata assignment.
-    assay : str or None, optional
-        Assay / platform name stored in `adata.obs["platform"]`.
-    gene_dict_path : str or None, optional
-        Path to the gene dictionary used by stage1 tokenization.
-    stage1_ckpt_path : str or None, optional
-        Path to the pretrained stage1 BrainBeacon checkpoint.
-    stage2_ckpt_path : str or None, optional
-        Path to the pretrained stage2 CellFormer checkpoint.
-    output_dir : str or None, optional
-        Directory used to save intermediate outputs and final artifacts.
-    output_prefix : str or None, optional
+    adata_path : str
+        Path to the input AnnData (``.h5ad``).
+    specie : str
+        Species name used in tokenization (e.g., ``"human"``, ``"mouse"``).
+    assay : str
+        Platform / assay name. Will be stored to ``adata.obs["platform"]``.
+    gene_dict_path : str
+        Path to the BrainBeacon gene dictionary (``.h5ad``).
+    stage1_ckpt_path : str
+        Path to BrainBeacon pretrained checkpoint.
+    stage2_ckpt_path : str
+        Path to CellPLM/CellFormer pretrained checkpoint.
+    output_dir : str
+        Output directory for intermediate files and results.
+    output_prefix : str
         Prefix used to name output files.
-    stage1_config : dict or None, optional
-        Flat override dictionary for stage1 settings.
-    stage2_config : dict or None, optional
-        Flat override dictionary for stage2 settings.
-    do_fit : bool, default=True
-        Whether to fit / fine-tune the stage2 model in this run.
-    fit_epochs : int, default=100
-        Number of epochs used when `do_fit=True`.
-    use_single_slice : bool, default=False
-        Whether to use only a single slice for training the stage2 model.
-    stage1_mode : str, default="disk"
-        Stage1 execution mode. One of {"disk", "memory"}. "disk" mode uses joblib bundles for tokenization and inference.
-    device : torch.device or str or None, optional
-        Device used for computation.
-    seed : int, default=42
-        Random seed for reproducibility.
-    deterministic : bool, default=True
-        Whether to enforce deterministic behavior when possible.
-    save_model : bool, default=True
-        Whether to save the stage2 model after running stage2.
-    save_model_path : str or None, optional
-        Path used to save the stage2 model. If None and `save_model=True`,
-        a default path under `output_dir` will be used.
+
+    path_dict : dict, optional
+        Optional path configuration passed to downstream reconstruction.
+    config_train : dict
+        Training/inference configuration. Must be provided.
+        This function will update it with internal defaults (e.g., ``weight_mode``, ``cd_weight``).
+    config_override : dict, optional
+        Optional overrides merged into ``config_train`` after defaults are set.
+
+    n_hvg : int, default 1000
+        Number of HVGs to use if ``use_hvg=True``.
+    cd_weight : float, default 0.02
+        Cell-density token weight used by expression-weighted pooling.
+    use_hvg : bool, default True
+        Whether to perform HVG selection in tokenization.
+    use_batch : bool, default True
+        Whether to enable batch-related options in CellFormer reconstruction.
+    use_spatial : bool, default True
+        Whether to enable spatial options in CellFormer reconstruction.
+    weight_mode : str, default "expression"
+        Pooling mode used for embedding aggregation (e.g., ``"expression"``).
+    force_tokenize : bool, default True
+        If True, redo tokenization and overwrite intermediate outputs.
+        Note: this flag also controls whether to skip BB inference when cached files exist.
+    use_dev_abs : bool, default False
+        Whether to use alternative dev/abs settings in tokenization (project-specific).
+
+    do_fit : bool, default True
+        Whether to fit/fine-tune CellFormer reconstruction.
+    fit_epochs : int, default 100
+        Number of epochs for fitting when ``do_fit=True``.
+    slice_sample : bool, optional
+        If True, select one slice for training (project-specific behavior).
+    enc_mod : str, default "flowformer"
+        Encoder module variant used by CellFormer.
+    mask_type : str, default "hidden"
+        Masking strategy, ``"hidden"`` or ``"input"``.
+    output_attentions : bool, default False
+        Whether to return/record attention weights during reconstruction.
+
+    save_model : bool, default True
+        Whether to save the trained/fitted CellFormer model.
+    save_model_path : str, optional
+        Path to save the model checkpoint. If None, a default path is used.
+    save_embedding_path : str, optional
+        Path to save final embeddings. If None, a default path is used.
+
+    device : torch.device or str, optional
+        Device to run on. If None, uses CUDA if available, else CPU.
+    seed : int, default 42
+        Random seed.
+    deterministic : bool, default True
+        Whether to enforce deterministic behavior (when supported).
 
     Returns
     -------
     adata : anndata.AnnData
-        AnnData object after completing the full BrainBeacon pipeline.
+        Updated AnnData object returned by ``run_bbcellformer_recon``.
+        Intermediate files (tokenization outputs, BB embeddings, final embeddings/model)
+        are saved under ``output_dir`` with the given ``output_prefix``.
     """
-    # ====== Setup ======
+    import scanpy as sc
+
+    from brainbeacon.tokenizer import set_seed
+
+    # ====== 1. Setup ======
+    os.makedirs(output_dir, exist_ok=True)
     if seed is not None:
         set_seed(seed, deterministic=deterministic)
-
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    elif not isinstance(device, torch.device):
-        device = torch.device(device)
 
-    if adata is None and adata_path is None:
-        raise ValueError("One of `adata` or `adata_path` must be provided.")
-    if adata is not None and adata_path is not None:
-        raise ValueError("Only one of `adata` or `adata_path` should be provided.")
-    if species is None:
-        raise ValueError("`species` must be provided.")
-    if assay is None:
-        raise ValueError("`assay` must be provided.")
-    if gene_dict_path is None:
-        raise ValueError("`gene_dict_path` must be provided.")
-    if stage1_ckpt_path is None:
-        raise ValueError("`stage1_ckpt_path` must be provided.")
-    if output_dir is None:
-        raise ValueError("`output_dir` must be provided.")
-    if output_prefix is None:
-        raise ValueError("`output_prefix` must be provided.")
+    if stage1_config is None:
+        raise ValueError("`config_train` must be imported.")
 
-    cfg1 = merge_config(default_config=default_config1, new_config=stage1_config)
-    cfg2 = merge_config(default_config=default_config2, new_config=stage2_config)
-    cfg2["n_aux"] = cfg1["n_aux"]
-    cfg2["bb_emb_dim"] = cfg1["dim_model"]
-    cfg2["gene_dict_path"] = gene_dict_path
+    stage1_config.update({
+        "weight_mode": weight_mode,
+        "cd_weight": cd_weight,
+        "masking_p": 0,
+        "batch_size": 64,
+        "expr_mode": None,
+        # "use_gene_id_emb": True,
+        # "use_homo_emb": True,
+        # "use_rna_type_emb": True,
+        # "use_esm_emb": True,
+    })
+    if config_override:
+        stage1_config.update(config_override)
 
-    # ====== Resolve output paths ======
-    path_dict = resolve_pipeline_paths(
-        output_dir=output_dir,
-        output_prefix=output_prefix,
-        save_model=save_model,
-        save_model_path=save_model_path,
-    )
-
-    # ====== Load adata ======
-    if adata is None:
-        adata = sc.read_h5ad(adata_path)
-    else:
-        adata = adata.copy()
-
-    adata.obs["species"] = species
+    # ====== 2. Load AnnData ======
+    adata = sc.read_h5ad(adata_path)
     adata.obs["platform"] = assay
 
-    # ====== Stage1 Pipeline ======
-    adata = run_stage1_pipeline(
-        adata=adata,
-        gene_dict_path=gene_dict_path,
-        stage1_ckpt_path=stage1_ckpt_path,
-        config_train=cfg1,
-        species=species,
-        assay=assay,
-        token_output_dir=path_dict["stage1_token_dir"],
-        save_embedding_path=path_dict["stage1_embedding_path"],
-        stage1_mode=stage1_mode,
-        device=device,
-    )
+    # ====== 3+4. BrainBeacon Tokenization + Inference ======
+    bb_embedding_path = os.path.join(output_dir, f"{output_prefix}_bb_embeddings.npz")
+    if os.path.exists(bb_embedding_path) and not force_tokenize:
+        print(f"Skipping BB inference. Found existing file: {bb_embedding_path}")
+    else:
+        start_time = time.time()
+        print(f"[BB inference] Start (fast in-memory path)...")
+        bb_emb = run_bb_inference_fast(
+            adata=adata,
+            gene_dict_path=gene_dict_path,
+            config_train=stage1_config,
+            pretrain_ckpt=stage1_ckpt_path,
+            device=device,
+            specie=specie,
+            assay=assay,
+            batch_size=stage1_config.get("batch_size", 64),
+            num_workers=4,
+            use_hvg=use_hvg,
+            n_hvg=n_hvg,
+            use_dev_abs=use_dev_abs,
+            save_path=bb_embedding_path,
+        )
+        end_time = time.time()
+        print(f"BB inference complete. Saved to: {bb_embedding_path}")
+        print(f"[BB inference] Time cost: {(end_time - start_time):.2f} sec")
 
-    # ====== Stage2 Pipeline ======
-    adata = run_stage2_pipeline(
+    # ====== 5. CellFormer Reconstruction ======
+    if save_embedding_path is None:
+        save_embedding_path = os.path.join(output_dir, f"{output_prefix}_embeddings.npz")
+    if save_model and save_model_path is None:
+        save_model_path = os.path.join(output_dir, f"{output_prefix}_cellformer.pt")
+
+    adata = run_bbcellformer_recon(
         adata=adata,
-        stage1_ckpt_path=stage1_ckpt_path,
-        stage2_ckpt_path=stage2_ckpt_path,
-        config=cfg2,
-        do_fit=do_fit,
-        fit_epochs=fit_epochs,
-        use_single_slice=use_single_slice,
-        save_model_path=path_dict["stage2_model_path"],
-        save_embedding_path=path_dict["stage2_embedding_path"],
+        bb_embedding_path=bb_embedding_path,
+        bb_pretrain_path=stage1_ckpt_path,
+        cellformer_version="cellformer",
+        path_dict = path_dict,
+        cellformer_directory=os.path.dirname(stage2_ckpt_path),
         device=device,
+        cellformer_pretrain_path=stage2_ckpt_path,
+        use_batch=use_batch,
+        use_spatial=use_spatial,
+        do_fit=do_fit,
+        slice_sample=slice_sample,
+        fit_epochs=fit_epochs,
+        enc_mod=enc_mod,
+        mask_type=mask_type,  # 'hidden' or 'input'
+        output_attentions=output_attentions,  # whether to return attention weights
+        save_embedding_path=save_embedding_path,
+        save_model_path=save_model_path,
     )
 
     return adata

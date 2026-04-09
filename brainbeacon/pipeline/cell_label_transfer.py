@@ -13,10 +13,10 @@ from typing import List
 from brainbeacon.tokenizer import set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.cell_type_annotation import CellTypeAnnotationPipeline
-from brainbeacon.pipeline.cell_embedding import run_tokenization, run_bb_inference
+from brainbeacon.pipeline.cell_embedding_old import run_tokenization, run_bb_inference
 
 from brainbeacon.configs.config import resolve_path
-from brainbeacon.configs.config_train import config_train
+from brainbeacon.configs.stage1_config import config_train
 
 def train_encoder_on_adata(
     adata,

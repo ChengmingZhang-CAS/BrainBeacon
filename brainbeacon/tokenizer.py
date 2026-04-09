@@ -27,8 +27,9 @@ from brainbeacon.configs.config import technology_dict
 from brainbeacon.configs.config import MAX_LENGTH
 from brainbeacon.configs.config import AUX_TOKEN
 from brainbeacon.configs.config import cell_density_bin_dict
-from brainbeacon.configs.config_train import config_train
+from brainbeacon.configs.stage1_config import stage1_config
 
+config_train = stage1_config
 config_train["single_context_length"] = config_train["context_length"]
 
 platform_resolution_um = {
@@ -70,6 +71,7 @@ mean_var_column_by_assay = {
     "stereo": ("mean_stereo",),
 }
 
+
 def set_seed(seed: int, deterministic: bool = True):
     np.random.seed(seed)
     random.seed(seed)
@@ -82,6 +84,7 @@ def set_seed(seed: int, deterministic: bool = True):
     if deterministic:
         torch.use_deterministic_algorithms(True)
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+
 
 def sf_normalize(X):
     X = X.copy()
@@ -110,6 +113,7 @@ def estimate_resolution(spatial, expected_physical_dist=20.0):
     nbrs = NearestNeighbors(n_neighbors=2).fit(spatial)
     dists, _ = nbrs.kneighbors(spatial)
     return expected_physical_dist / np.mean(dists[:, 1])
+
 
 def convert_spatial_to_um(adata, platform_name):
     """
@@ -226,6 +230,7 @@ def load_gene_dict_and_mean(gene_dict_path, assay):
     )
     return gene_dict, mean_values
 
+
 def compute_density_token(adata, radius_um=100, n_bins=5):
     """
     compute the density token for each cell
@@ -254,12 +259,11 @@ def compute_density_token(adata, radius_um=100, n_bins=5):
 
 
 def spatial_expression_imputation_yyw(adata, spatial_key='spatial', expr_key='X',
-                                  n_neighbors=20, spatial_weight=0.5,
-                                  min_genes=50, min_cells=50, n_pcs=50,
-                                  use_raw_counts=True,
-                                  chunk_size=1000,
-                                  progress_bar=True):
-    
+                                      n_neighbors=20, spatial_weight=0.5,
+                                      min_genes=50, min_cells=50, n_pcs=50,
+                                      use_raw_counts=True,
+                                      chunk_size=1000,
+                                      progress_bar=True):
     """
     based on spatial and expression similarity to impute gene expression values.
 
@@ -460,6 +464,7 @@ def spatial_expression_imputation(adata, spatial_key='spatial', expr_key='X',
 
     return adata
 
+
 def ensure_ensembl_ids_raw(adata, species="hsapiens"):
     """
     Ensure gene IDs are Ensembl.
@@ -565,10 +570,10 @@ def ensure_ensembl_ids(adata, species="human"):
 
 
 def align_adata_and_mean_matrix(
-    adata: ad.AnnData,
-    gene_dict: ad.AnnData,
-    mean_matrix: np.ndarray,
-    fill_miss_mean: bool = False,
+        adata: ad.AnnData,
+        gene_dict: ad.AnnData,
+        mean_matrix: np.ndarray,
+        fill_miss_mean: bool = False,
 ) -> tuple[ad.AnnData, np.ndarray]:
     """
     Align adata and mean_matrix to gene_dict:
@@ -592,7 +597,7 @@ def align_adata_and_mean_matrix(
     # Align mean matrix
     gene_indices = [gene_dict.var.index.get_loc(g) for g in ordered_shared_genes]
     mean_matrix_aligned = mean_matrix[gene_indices]
-    
+
     # Ensure mean_matrix is 2D
     if mean_matrix_aligned.ndim == 1:
         mean_matrix_aligned = mean_matrix_aligned.reshape(-1, 1)
@@ -604,7 +609,7 @@ def align_adata_and_mean_matrix(
             mean_matrix_aligned = np.ones_like(mean_matrix_aligned)
             return adata, mean_matrix_aligned
         raise ValueError("All aligned mean vectors contain zero! Cannot proceed.")
-    
+
     adata = adata[:, nonzero_mask].copy()
     mean_matrix_aligned = mean_matrix_aligned[nonzero_mask]
 
@@ -618,7 +623,8 @@ def compute_deviation_bin(adata_output, n_neighbors=50, n_bins=5):
         lambda x: f"{x['brain_region']}_{x['brain_region_main']}", axis=1
     )
     adata_output.obsm['deviation_bin'] = np.zeros((adata_output.n_obs, adata_output.n_vars), dtype=np.int8)
-    adata_output.obsm['neighbor_gene_distribution'] = np.zeros((adata_output.n_obs, adata_output.n_vars), dtype=np.float32)
+    adata_output.obsm['neighbor_gene_distribution'] = np.zeros((adata_output.n_obs, adata_output.n_vars),
+                                                               dtype=np.float32)
     X_raw = adata_output.X.copy()
     adata_output.X = sf_normalize(adata_output.X)
     group_results = {}
@@ -638,12 +644,12 @@ def compute_deviation_bin(adata_output, n_neighbors=50, n_bins=5):
             neighbor_expr = adata_output.X[neighbor_idx_list]
             neighbor_gene_distribution.append(np.asarray(neighbor_expr.mean(axis=0)).flatten())
         neighbor_gene_distribution_matrix = np.stack(neighbor_gene_distribution, axis=0)
-        
+
         cell_expr_matrix = adata_output.X[index_array]
         if hasattr(cell_expr_matrix, "todense"):
             cell_expr_matrix = cell_expr_matrix.todense()
         cell_expr_matrix = np.asarray(cell_expr_matrix)
-        
+
         deviation_matrix = cell_expr_matrix - neighbor_gene_distribution_matrix
         mask_all_zero = (cell_expr_matrix == 0) & (neighbor_gene_distribution_matrix == 0)
         deviation_matrix[mask_all_zero] = np.nan
@@ -688,12 +694,12 @@ def compute_deviation_bin(adata_output, n_neighbors=50, n_bins=5):
 
 
 def compute_deviation_bin_rapid(
-    adata_output,
-    n_neighbors=50,
-    n_bins=5,
-    batch_size=2000,
-    store_neighbor_gene_distribution=True,
-    neighbor_jobs=4,
+        adata_output,
+        n_neighbors=50,
+        n_bins=5,
+        batch_size=2000,
+        store_neighbor_gene_distribution=True,
+        neighbor_jobs=4,
 ):
     return compute_deviation_bin_rapid_v2(
         adata_output,
@@ -708,20 +714,20 @@ def compute_deviation_bin_rapid(
 
 
 def compute_deviation_bin_rapid_v2(
-    adata_output,
-    n_neighbors=50,
-    n_bins=5,
-    batch_size=2000,
-    use_abs=True,
-    store_neighbor_gene_distribution=True,
-    zero_threshold=1e-4,
-    neighbor_jobs=4,
+        adata_output,
+        n_neighbors=50,
+        n_bins=5,
+        batch_size=2000,
+        use_abs=True,
+        store_neighbor_gene_distribution=True,
+        zero_threshold=1e-4,
+        neighbor_jobs=4,
 ):
     assert "x" in adata_output.obs.columns and "y" in adata_output.obs.columns, "Spatial coordinates 'x', 'y' not found in .obs"
     assert "brain_region" in adata_output.obs.columns and "brain_region_main" in adata_output.obs.columns, "Missing region annotations"
 
     slice_brain_area = (
-        adata_output.obs["brain_region"].astype(str) + "_" + adata_output.obs["brain_region_main"].astype(str)
+            adata_output.obs["brain_region"].astype(str) + "_" + adata_output.obs["brain_region_main"].astype(str)
     )
     adata_output.obs["slice_brain_area"] = slice_brain_area
     adata_output.obsm["deviation_bin"] = np.zeros((adata_output.n_obs, adata_output.n_vars), dtype=np.int8)
@@ -772,7 +778,8 @@ def compute_deviation_bin_rapid_v2(
 
                 batch_neighbor_expr = (weight_matrix @ x_group).toarray().astype(np.float32, copy=False)
                 batch_cell_expr = x_group[start:end].toarray().astype(np.float32, copy=False)
-                deviation = np.abs(batch_cell_expr - batch_neighbor_expr) if use_abs else batch_cell_expr - batch_neighbor_expr
+                deviation = np.abs(
+                    batch_cell_expr - batch_neighbor_expr) if use_abs else batch_cell_expr - batch_neighbor_expr
 
                 if zero_threshold > 0:
                     both_low_mask = (batch_cell_expr < zero_threshold) & (batch_neighbor_expr < zero_threshold)
@@ -791,7 +798,8 @@ def compute_deviation_bin_rapid_v2(
                 batch_neighbors = all_indices[start:end]
                 batch_cell_expr = x_group[start:end]
                 batch_neighbor_expr = x_group[batch_neighbors].mean(axis=1, dtype=np.float32)
-                deviation = np.abs(batch_cell_expr - batch_neighbor_expr) if use_abs else batch_cell_expr - batch_neighbor_expr
+                deviation = np.abs(
+                    batch_cell_expr - batch_neighbor_expr) if use_abs else batch_cell_expr - batch_neighbor_expr
 
                 if zero_threshold > 0:
                     both_low_mask = (batch_cell_expr < zero_threshold) & (batch_neighbor_expr < zero_threshold)
@@ -819,15 +827,16 @@ def compute_deviation_bin_rapid_v2(
     adata_output.X = x_raw
     return adata_output
 
+
 @numba.jit(nopython=True, nogil=True)
 def _sub_tokenize_data(
-    x: np.array,
-    gene_id:np.array,
-    gene_connect_comp: np.array,
-    rna_type_id: np.array,
-    deviation_bin: np.array,
-    max_seq_len: int = -1,
-    aux_tokens: int = 30
+        x: np.array,
+        gene_id: np.array,
+        gene_connect_comp: np.array,
+        rna_type_id: np.array,
+        deviation_bin: np.array,
+        max_seq_len: int = -1,
+        aux_tokens: int = 30
 ):
     n_cells, n_genes = x.shape
     seq_len = max_seq_len if max_seq_len > 0 else n_genes
@@ -848,7 +857,7 @@ def _sub_tokenize_data(
         nonzero_mask = np.nonzero(cell)[0]
         if len(nonzero_mask) == 0:
             continue  # skip empty cells
-        
+
         # Get expression values and sort
         expr_values = cell[nonzero_mask]
         sorted_idx = np.argsort(-expr_values)
@@ -870,16 +879,17 @@ def _sub_tokenize_data(
         exp_final[i, :real_seq_len] = expr_values[sorted_idx[:real_seq_len]]
 
     return (
-        scores_final,                    # gene token ids (offset by aux_tokens)
-        scores_connect_comp_final,       # homology group token
-        scores_rna_type_id_final,        # gene type token
-        scores_deviation_bin_final,      # deviation bin token (0 = NaN, 1~5 = binned)
-        exp_final                        # expression values
+        scores_final,  # gene token ids (offset by aux_tokens)
+        scores_connect_comp_final,  # homology group token
+        scores_rna_type_id_final,  # gene type token
+        scores_deviation_bin_final,  # deviation bin token (0 = NaN, 1~5 = binned)
+        exp_final  # expression values
     )
+
 
 def tokenize_data(
         x: np.array,
-        gene_id:np.array,
+        gene_id: np.array,
         gene_connect_comp: np.array,
         gene_type_id: np.array,
         deviation_bin: np.array,
@@ -894,15 +904,16 @@ def tokenize_data(
     out = x / mean_matrix.reshape((1, -1))
     out = np.asarray(out)
     scores_final, scores_connect_comp_final, scores_rna_type_id, scores_deviation_bin, exp_final = _sub_tokenize_data(
-        out, gene_id,gene_connect_comp, gene_type_id, deviation_bin, max_seq_len, aux_token_len
+        out, gene_id, gene_connect_comp, gene_type_id, deviation_bin, max_seq_len, aux_token_len
     )
     return (
-        scores_final.astype(np.int32), 
-        scores_connect_comp_final.astype(np.int32), 
-        scores_rna_type_id.astype(np.int32), 
+        scores_final.astype(np.int32),
+        scores_connect_comp_final.astype(np.int32),
+        scores_rna_type_id.astype(np.int32),
         scores_deviation_bin.astype(np.int32),
         exp_final.astype(np.float32)
     )
+
 
 def convert_dtypes_for_parquet(df):
     """Convert the data types of the DataFrame to ensure they can be serialized to parquet format"""
@@ -920,24 +931,25 @@ def convert_dtypes_for_parquet(df):
             df[col] = df[col].astype('float64')
     return df
 
+
 def standardize_adata_obs(
-    adata: ad.AnnData,
-    gene_dict: ad.AnnData,
-    mean_matrix: np.array,
-    specie: str,
-    assay: str,
-    cell_density: bool = True,
+        adata: ad.AnnData,
+        gene_dict: ad.AnnData,
+        mean_matrix: np.array,
+        specie: str,
+        assay: str,
+        cell_density: bool = True,
 ) -> tuple[ad.AnnData, np.ndarray]:
     """
     Standardize the observation (obs) attributes of an AnnData object and align it with a gene dictionary.
-    
+
     Args:
         adata: Input AnnData object to standardize
         gene_dict: Reference gene dictionary AnnData object
         specie: Species identifier
         assay: Assay type identifier
         density: Whether density token is included
-    
+
     Returns:
         Standardized AnnData object with aligned genes and normalized observations
     """
@@ -986,7 +998,8 @@ def standardize_adata_obs(
 
     return adata_output, mean_matrix_aligned
 
-def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, output_path=None, anno=False,
+
+def tokenization_h5ad(adata, gene_dict_path, species=None, assay=None, output_path=None, anno=False,
                       split="train", label=False, cell_density=True, gene_niche=True,
                       use_hvg=True, n_hvg=2000, min_genes=3, min_cells=3, spatial_imputation=False,
                       use_dev_abs=True):
@@ -997,8 +1010,9 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
     assert gene_dict_path, "Input `gene_dict_path` cannot be empty."
     normalized_assay = normalize_assay_name(assay)
     gene_dict, mean_matrix = load_gene_dict_and_mean(gene_dict_path, normalized_assay)
-    print(f"path to process: {adata_path}")
-    adata = sc.read_h5ad(adata_path)
+    print(f"adata to process: {adata.shape}")
+    # adata = sc.read_h5ad(adata_path)
+
     if normalized_assay == "snrna":
         cell_density = False  # snRNA-seq does not have spatial coordinates
         gene_niche = False
@@ -1042,13 +1056,13 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
                 cell_labels_int = le.fit_transform(adata.obs['cell_label'])
                 with open(le_path, "wb") as f:
                     pickle.dump(le, f)
-                print(f"Trained and saved new LabelEncoder to {le_path}")    
+                print(f"Trained and saved new LabelEncoder to {le_path}")
 
             cell_labels_tensor = torch.tensor(cell_labels_int)
             adata.obs['cell_label'] = cell_labels_tensor
     else:
         adata.obs['cell_label'] = pd.Series(np.zeros(adata.shape[0], dtype=np.int64), index=adata.obs.index,
-                                    name='cell_label')
+                                            name='cell_label')
     adata.obs["original_index"] = adata.obs.index
     # ensure adata.var.index is Ensembl IDs
     is_ensembl = adata.var.index.str.startswith(('ENS'))
@@ -1057,15 +1071,18 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
             "adata must contain Ensembl IDs in `var.index`. "
             "Please convert gene names to Ensembl IDs before proceeding."
         )
-    adata_output, mean_matrix = standardize_adata_obs(adata, gene_dict, mean_matrix, specie, normalized_assay, cell_density)
+    adata_output, mean_matrix = standardize_adata_obs(adata, gene_dict, mean_matrix, species, normalized_assay,
+                                                      cell_density)
 
     # No brain_region
     if use_dev_abs:
-        adata_output.obs['brain_region'] = adata_output.obs["slice"] 
-        adata_output.obs['brain_region_main'] = adata_output.obs["slice"] # user can change the cell label to other annotation
+        adata_output.obs['brain_region'] = adata_output.obs["slice"]
+        adata_output.obs['brain_region_main'] = adata_output.obs[
+            "slice"]  # user can change the cell label to other annotation
     else:
-        adata_output.obs['brain_region'] = adata_output.obs["slice"] 
-        adata_output.obs['brain_region_main'] = adata_output.obs["cell_label"] # user can change the cell label to other annotation
+        adata_output.obs['brain_region'] = adata_output.obs["slice"]
+        adata_output.obs['brain_region_main'] = adata_output.obs[
+            "cell_label"]  # user can change the cell label to other annotation
 
     if gene_niche:
         if use_dev_abs:
@@ -1115,7 +1132,7 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
             import shutil
             shutil.rmtree(item_path)
 
-    for batch in tqdm(range(N_BATCHES), desc="Processing data batches"): 
+    for batch in tqdm(range(N_BATCHES), desc="Processing data batches"):
         X_chunk = adata_output.X[batch * chunk_len:chunk_len * (batch + 1)]
         if issparse(X_chunk):
             X_chunk = X_chunk.toarray()
@@ -1131,9 +1148,10 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
             max_seq_len=MAX_LENGTH,
             aux_token_len=AUX_TOKEN,
         )
-    
+
         available_columns = []
-        for col in ['brain_region', 'brain_region_main', 'x', 'y', 'assay', 'specie', 'idx', "original_index", "cell_label", "density_token"]:
+        for col in ['brain_region', 'brain_region_main', 'x', 'y', 'assay', 'specie', 'idx', "original_index",
+                    "cell_label", "density_token"]:
             if col in obs_tokens.columns:
                 available_columns.append(col)
 
@@ -1161,24 +1179,240 @@ def tokenization_h5ad(adata_path, gene_dict_path, specie=None, assay=None, outpu
         )
     return output_path
 
+def tokenize_adata_in_memory(
+    adata,
+    gene_dict_path: str,
+    species: str,
+    assay: str,
+    use_hvg: bool = True,
+    n_hvg: int = 1000,
+    use_dev_abs: bool = False,
+    min_genes: int = 3,
+    min_cells: int = 3,
+    cell_density: bool = True,
+    gene_niche: bool = True,
+) -> dict:
+    """
+    Tokenize an AnnData object entirely in memory (no disk I/O).
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Input AnnData. Will be copied internally.
+    gene_dict_path : str
+        Path to gene_dict.h5ad.
+    species : str
+        Species identifier.
+    assay : str
+        Assay identifier.
+    use_hvg : bool, default=True
+        Whether to use HVG selection.
+    n_hvg : int, default=1000
+        Number of HVGs.
+    use_dev_abs : bool, default=False
+        Whether to use abs deviation mode.
+    min_genes : int, default=3
+        Minimum genes per cell.
+    min_cells : int, default=3
+        Minimum cells per gene.
+    cell_density : bool, default=True
+        Whether to compute density token.
+    gene_niche : bool, default=True
+        Whether to compute deviation / niche token.
+
+    Returns
+    -------
+    token_dict : dict
+        Keys:
+            - real_indices
+            - attention_mask
+            - connect_comp
+            - rna_type
+            - neighbor_gene_dist
+            - exp
+            - cell_raw_index
+    """
+    PADDING_TOKEN = 1
+
+    adata = adata.copy()
+    normalized_assay = normalize_assay_name(assay)
+    gene_dict, mean_matrix = load_gene_dict_and_mean(gene_dict_path, normalized_assay)
+
+    # ====== Assay-specific settings ======
+    if normalized_assay == "snrna":
+        cell_density = False
+        gene_niche = False
+
+    if normalized_assay == "stereo":
+        adata = spatial_expression_imputation(
+            adata,
+            spatial_key="spatial",
+            n_neighbors=50,
+        )
+
+    # ====== QC ======
+    sc.pp.filter_cells(adata, min_genes=min_genes)
+    sc.pp.filter_genes(adata, min_cells=min_cells)
+
+    # ====== HVG ======
+    if use_hvg and adata.n_vars > n_hvg:
+        tmp = adata.copy()
+        sc.pp.normalize_total(tmp, target_sum=1e4)
+        sc.pp.highly_variable_genes(tmp, n_top_genes=n_hvg, flavor="seurat_v3")
+        adata = adata[:, tmp.var.highly_variable].copy()
+
+    # ====== Labels / index ======
+    adata.obs["cell_label"] = 0
+    adata.obs["original_index"] = adata.obs.index
+
+    # ====== Ensembl check ======
+    is_ensembl = adata.var.index.str.startswith("ENS")
+    if not is_ensembl.all():
+        raise ValueError(
+            "adata must contain Ensembl IDs in var.index. "
+            "Please convert gene names to Ensembl IDs first."
+        )
+
+    # ====== Standardize obs and align genes ======
+    adata_output, mean_matrix = standardize_adata_obs(
+        adata,
+        gene_dict,
+        mean_matrix,
+        species,
+        normalized_assay,
+        cell_density,
+    )
+
+    # ====== Required brain region columns ======
+    adata_output.obs["brain_region"] = adata_output.obs["slice"]
+    if use_dev_abs:
+        adata_output.obs["brain_region_main"] = adata_output.obs["slice"]
+    else:
+        adata_output.obs["brain_region_main"] = adata_output.obs["cell_label"]
+
+    # ====== Deviation / niche ======
+    if gene_niche:
+        if use_dev_abs:
+            adata_output = compute_deviation_bin_rapid_v2(
+                adata_output,
+                n_neighbors=50,
+                n_bins=5,
+                use_abs=True,
+                store_neighbor_gene_distribution=False,
+                zero_threshold=1e-4,
+            )
+        else:
+            adata_output = compute_deviation_bin_rapid(
+                adata_output,
+                n_neighbors=50,
+                n_bins=5,
+                store_neighbor_gene_distribution=False,
+            )
+    else:
+        adata_output.obsm["deviation_bin"] = np.zeros(
+            (adata_output.shape[0], adata_output.shape[1]),
+            dtype=np.int8,
+        )
+        adata_output.obs["density_token"] = np.zeros(
+            adata_output.shape[0],
+            dtype=np.int8,
+        )
+
+    # ====== Tokenize in chunks ======
+    obs_df = adata_output.obs.reset_index()
+    gene_type_col = _gene_type_column(adata_output.var)
+
+    gene_connect_comp = adata_output.var["homo_connect_id"].values
+    gene_id = adata_output.var["gene_id"].values
+    gene_type_id = adata_output.var[gene_type_col].values
+    deviation_bin_all = adata_output.obsm["deviation_bin"]
+
+    n_cells = adata_output.shape[0]
+    chunk_size = 10_000
+    n_chunks = math.ceil(n_cells / chunk_size)
+
+    all_real_indices = []
+    all_attention_mask = []
+    all_connect_comp = []
+    all_rna_type = []
+    all_neighbor_gene_dist = []
+    all_exp = []
+    all_cell_raw_index = []
+
+    for chunk_idx in range(n_chunks):
+        start = chunk_idx * chunk_size
+        end = min(start + chunk_size, n_cells)
+
+        X_chunk = adata_output.X[start:end]
+        if issparse(X_chunk):
+            X_chunk = X_chunk.toarray()
+
+        obs_chunk = obs_df.iloc[start:end]
+
+        tokenized, tok_connect, tok_rna, tok_dev, tok_exp = tokenize_data(
+            x=X_chunk,
+            gene_connect_comp=gene_connect_comp,
+            gene_id=gene_id,
+            gene_type_id=gene_type_id,
+            deviation_bin=deviation_bin_all[start:end],
+            mean_matrix=mean_matrix,
+            max_seq_len=MAX_LENGTH,
+            aux_token_len=AUX_TOKEN,
+        )
+
+        tokenized, tok_connect, tok_rna, tok_dev, tok_exp = _prepend_prefix_tokens(
+            obs_chunk,
+            tokenized,
+            tok_connect,
+            tok_rna,
+            tok_dev,
+            tok_exp,
+        )
+
+        # Inference path: no masking, only convert 0 -> padding token and build attention mask
+        real_indices = tokenized.astype(np.int32, copy=True)
+        real_indices[real_indices == 0] = PADDING_TOKEN
+        attention_mask = (real_indices == PADDING_TOKEN)
+
+        all_real_indices.append(real_indices)
+        all_attention_mask.append(attention_mask)
+        all_connect_comp.append(tok_connect.astype(np.int32))
+        all_rna_type.append(tok_rna.astype(np.int32))
+        all_neighbor_gene_dist.append(tok_dev.astype(np.int32))
+        all_exp.append(tok_exp.astype(np.float32))
+        all_cell_raw_index.append(obs_chunk["original_index"].to_numpy())
+
+    return {
+        "real_indices": np.concatenate(all_real_indices, axis=0),
+        "attention_mask": np.concatenate(all_attention_mask, axis=0),
+        "connect_comp": np.concatenate(all_connect_comp, axis=0),
+        "rna_type": np.concatenate(all_rna_type, axis=0),
+        "neighbor_gene_dist": np.concatenate(all_neighbor_gene_dist, axis=0),
+        "exp": np.concatenate(all_exp, axis=0),
+        "cell_raw_index": np.concatenate(all_cell_raw_index, axis=0),
+    }
+
+
 def split_iter(a: list, n: int):
     """Pack a dataset (array of samples) into an array of batches"""
-    q = math.ceil(len(a) / n) 
+    q = math.ceil(len(a) / n)
 
-    for i in range(q - 1):  
+    for i in range(q - 1):
         yield a[i * n:(i + 1) * n]
 
     # Process the last batch to avoid empty batch
     last_batch = a[(q - 1) * n:]
-    if isinstance(last_batch, np.ndarray):  # 
+    if isinstance(last_batch, np.ndarray):  #
         if last_batch.size > 0:
             yield last_batch
-    else:  # 
+    else:  #
         if len(last_batch) > 0:
             yield last_batch
 
+
 def batches(data, batch_size=36):
     return list(split_iter(data, batch_size))
+
 
 def _stack_array_column(values):
     array = values.to_numpy() if hasattr(values, "to_numpy") else np.asarray(values)
@@ -1191,7 +1425,8 @@ def _prepend_prefix_tokens(obs_df, x, x_connect_comp, x_rna_type, x_neighbor_gen
     x = x[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
     x_connect_comp = x_connect_comp[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
     x_rna_type = x_rna_type[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
-    x_neighbor_gene_distribution = x_neighbor_gene_distribution[:, :config_train["single_context_length"]].astype(np.int32, copy=False)
+    x_neighbor_gene_distribution = x_neighbor_gene_distribution[:, :config_train["single_context_length"]].astype(
+        np.int32, copy=False)
     x_exp = x_exp[:, :config_train["single_context_length"]].astype(np.float32, copy=False)
 
     if obs_df is None:
@@ -1285,10 +1520,12 @@ def _mask_indices_numpy(indices, p, n_tokens, n_aux, rng):
         masked_indices[replace_with_original] = real_indices[replace_with_original]
 
     attention_mask = masked_indices == padding_token
-    return real_indices, masked_indices, keep_mask.astype(np.int32), attention_mask.astype(bool), replace_with_random.astype(bool), replace_with_original.astype(bool)
+    return real_indices, masked_indices, keep_mask.astype(np.int32), attention_mask.astype(
+        bool), replace_with_random.astype(bool), replace_with_original.astype(bool)
 
 
-def _apply_synchronized_feature_mask(feature_values, mask, masked_indices, replace_with_random, replace_with_original, feature_lookup):
+def _apply_synchronized_feature_mask(feature_values, mask, masked_indices, replace_with_random, replace_with_original,
+                                     feature_lookup):
     masked_feature_values = feature_values.astype(np.int32, copy=True)
     masked_positions = mask == 0
     if not masked_positions.any():
@@ -1311,16 +1548,16 @@ def _dump_batched_array(values, batch_size, path):
 
 
 def _write_job_bundle(
-    output_dir,
-    obs_df,
-    x,
-    x_connect_comp,
-    x_rna_type,
-    x_neighbor_gene_distribution,
-    x_exp,
-    connect_comp_lookup=None,
-    rna_type_lookup=None,
-    rng=None,
+        output_dir,
+        obs_df,
+        x,
+        x_connect_comp,
+        x_rna_type,
+        x_neighbor_gene_distribution,
+        x_exp,
+        connect_comp_lookup=None,
+        rna_type_lookup=None,
+        rng=None,
 ):
     if rng is None:
         rng = _new_rng()
@@ -1343,9 +1580,11 @@ def _write_job_bundle(
     )
 
     if connect_comp_lookup is None:
-        connect_comp_lookup = _build_feature_lookup(real_indices, x_connect_comp, config_train["n_aux"], config_train["n_tokens"])
+        connect_comp_lookup = _build_feature_lookup(real_indices, x_connect_comp, config_train["n_aux"],
+                                                    config_train["n_tokens"])
     if rna_type_lookup is None:
-        rna_type_lookup = _build_feature_lookup(real_indices, x_rna_type, config_train["n_aux"], config_train["n_tokens"])
+        rna_type_lookup = _build_feature_lookup(real_indices, x_rna_type, config_train["n_aux"],
+                                                config_train["n_tokens"])
 
     masked_connect_comp = _apply_synchronized_feature_mask(
         x_connect_comp,
@@ -1366,12 +1605,17 @@ def _write_job_bundle(
 
     os.makedirs(output_dir, exist_ok=True)
     batch_size = config_train["batch_size"]
-    _dump_batched_array(masked_indices.astype(np.int32), batch_size, os.path.join(output_dir, f'masked_indices_{batch_size}.job'))
+    _dump_batched_array(masked_indices.astype(np.int32), batch_size,
+                        os.path.join(output_dir, f'masked_indices_{batch_size}.job'))
     _dump_batched_array(mask.astype(np.int32), batch_size, os.path.join(output_dir, f'mask_{batch_size}.job'))
-    _dump_batched_array(real_indices.astype(np.int32), batch_size, os.path.join(output_dir, f'real_indices_{batch_size}.job'))
-    _dump_batched_array(attention_mask.astype(bool), batch_size, os.path.join(output_dir, f'attention_mask_{batch_size}.job'))
-    _dump_batched_array(masked_connect_comp.astype(np.int32), batch_size, os.path.join(output_dir, f'connect_comp_{batch_size}.job'))
-    _dump_batched_array(masked_rna_type.astype(np.int32), batch_size, os.path.join(output_dir, f'rna_type_{batch_size}.job'))
+    _dump_batched_array(real_indices.astype(np.int32), batch_size,
+                        os.path.join(output_dir, f'real_indices_{batch_size}.job'))
+    _dump_batched_array(attention_mask.astype(bool), batch_size,
+                        os.path.join(output_dir, f'attention_mask_{batch_size}.job'))
+    _dump_batched_array(masked_connect_comp.astype(np.int32), batch_size,
+                        os.path.join(output_dir, f'connect_comp_{batch_size}.job'))
+    _dump_batched_array(masked_rna_type.astype(np.int32), batch_size,
+                        os.path.join(output_dir, f'rna_type_{batch_size}.job'))
 
     if obs_df is not None and "original_index" in obs_df.columns:
         cell_raw_index = obs_df["original_index"].to_numpy()
@@ -1435,13 +1679,13 @@ def do_masking(adata, p, n_tokens, rng=None):
 
     return adata
 
+
 def process_parquet(input_file, output_path):
     """
     Reads a token parquet file and writes batched .job outputs.
     """
     if os.path.basename(input_file) == "tokens-0000.parquet":
         print(f"Begin processing: {input_file}")
-    
 
     table = pq.read_table(input_file)
     if os.path.basename(input_file) == "tokens-0000.parquet":
@@ -1459,16 +1703,14 @@ def process_parquet(input_file, output_path):
         "cell_label": False,
         "density_token": False
     }
-    
+
     # 3) Check the existence of all columns at once
     for col in table.column_names:
         if col in required_obs_cols:
             required_obs_cols[col] = True
-    
 
     obs_cols = [col for col, exists in required_obs_cols.items() if exists]
     obs_df = table.select(obs_cols).to_pandas() if obs_cols else None
-    
 
     if "X" not in table.column_names:
         raise ValueError("No 'X' column in parquet; cannot proceed.")
@@ -1488,7 +1730,8 @@ def process_parquet(input_file, output_path):
     X = _stack_array_column(table["X"]).astype(np.int32, copy=False)
     X_connect_comp = _stack_array_column(table[data_connect_comp_key]).astype(np.int32, copy=False)
     X_rna_type = _stack_array_column(table[data_rna_type_key]).astype(np.int32, copy=False)
-    X_neighbor_gene_distribution = _stack_array_column(table[data_neighbor_gene_distribution_key]).astype(np.int32, copy=False)
+    X_neighbor_gene_distribution = _stack_array_column(table[data_neighbor_gene_distribution_key]).astype(np.int32,
+                                                                                                          copy=False)
     X_exp = _stack_array_column(table[data_exp_key]).astype(np.float32, copy=False)
 
     if not os.path.exists(output_path):

@@ -120,16 +120,17 @@ class NB(nn.Module):
 
 
 class NBMLPDecoder(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim, num_layers, dropout, norm, batch_num=0, dataset_num=0, platform_num=0):
+    def __init__(self, in_dim, hidden_dim, out_dim, num_layers, dropout, norm, batch_num=0, dataset_num=0, platform_num=0, alpha_cov=1):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.norm = norm
         self.layers = nn.ModuleList()
+        self.alpha_cov = alpha_cov
         self.covariate_layers = nn.ModuleList()
         self.covariate_num = {
-            'batch': batch_num,
-            'dataset': dataset_num,
-            'platform': platform_num,
+            'slice_cov': batch_num,
+            'dataset_cov': dataset_num,
+            'platform_cov': platform_num,
         }
         for i in range(num_layers-1):
             dim = hidden_dim if i > 0 else in_dim
@@ -147,7 +148,22 @@ class NBMLPDecoder(nn.Module):
                             nn.Embedding(self.covariate_num[cov], hidden_dim),
                             nn.PReLU(),
                             create_norm(norm, hidden_dim),
+                            # create_norm(None, hidden_dim),
                         )
+                        # if cov == "platform":
+                        #     self.covariate_layers[-1][cov] = nn.Sequential(
+                        #         nn.Embedding(self.covariate_num[cov], hidden_dim),
+                        #         nn.PReLU(),
+                        #         create_norm(None, hidden_dim),
+                        #     )
+                        #     nn.init.normal_(self.covariate_layers[-1][cov][0].weight, mean=0.0, std=1e-3)
+                        # else:
+                        #     self.covariate_layers[-1][cov] = nn.Sequential(
+                        #         nn.Embedding(self.covariate_num[cov], hidden_dim),
+                        #         nn.PReLU(),
+                        #         create_norm(norm, hidden_dim),
+                        #     )
+
         self.out_layer = NB(
             hidden_dim, out_dim,
         )
@@ -161,10 +177,10 @@ class NBMLPDecoder(nn.Module):
                 for cov in self.covariate_num.keys(): # Iterate over each type of covariate (batch/dataset/platform)
                     if self.covariate_num[cov] > 0: # if a certain type of covariate exist
                         if cov in x_dict: # Whether the covaraite label is input
-                            x += self.covariate_layers[i][cov](x_dict[cov])
+                            x += self.covariate_layers[i][cov](x_dict[cov]) * self.alpha_cov
                         else: # If not input, take average over all of them
                             convariate_layer = self.covariate_layers[i][cov]
-                            x += convariate_layer[2](convariate_layer[1](convariate_layer[0].weight.detach().sum(0).unsqueeze(0)))
+                            x += convariate_layer[2](convariate_layer[1](convariate_layer[0].weight.detach().mean(0).unsqueeze(0))) * self.alpha_cov
             else:
                 x = layer(x)
         mean, disp = self.out_layer(x)

@@ -156,4 +156,4 @@ class NBReconstructionLoss(nn.Module):
         t2 = (disp + truth) * torch.log(1.0 + (mean / (disp + eps))) + (truth * (torch.log(disp + eps) - torch.log(mean + eps)))
         nb_final = t1 + t2 + nb_final_masked
 
-        return nb_final.mean(-1).mean()
+        return nb_final.sum(-1).mean()
