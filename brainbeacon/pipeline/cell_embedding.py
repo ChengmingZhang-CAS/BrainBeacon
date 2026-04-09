@@ -641,26 +641,41 @@ class InMemoryTokenDataset(Dataset):
     """
 
     def __init__(self, token_dict: dict, max_len: int = 1000):
-        self.real_indices = token_dict["real_indices"][:, :max_len].astype(np.int32)
-        self.attention_mask = token_dict["attention_mask"][:, :max_len]
-        self.connect_comp = token_dict["connect_comp"][:, :max_len].astype(np.int32)
-        self.rna_type = token_dict["rna_type"][:, :max_len].astype(np.int32)
-        self.neighbor_gene_dist = token_dict["neighbor_gene_dist"][:, :max_len].astype(np.int32)
-        self.exp = token_dict["exp"][:, :max_len].astype(np.float32)
-        self.cell_raw_index = token_dict["cell_raw_index"]
+        # Pre-convert arrays to torch tensors once in __init__
+        self.real_indices = torch.from_numpy(
+            token_dict["real_indices"][:, :max_len].astype(np.int64, copy=False)
+        )
+        self.attention_mask = torch.from_numpy(
+            token_dict["attention_mask"][:, :max_len].astype(np.bool_, copy=False)
+        )
+        self.connect_comp = torch.from_numpy(
+            token_dict["connect_comp"][:, :max_len].astype(np.int64, copy=False)
+        )
+        self.rna_type = torch.from_numpy(
+            token_dict["rna_type"][:, :max_len].astype(np.int64, copy=False)
+        )
+        self.neighbor_gene_dist = torch.from_numpy(
+            token_dict["neighbor_gene_dist"][:, :max_len].astype(np.float32, copy=False)
+        )
+        self.exp = torch.from_numpy(
+            token_dict["exp"][:, :max_len].astype(np.float32, copy=False)
+        )
+
+        # Keep raw index as a numpy array / python list, no per-sample str conversion here
+        self.cell_raw_index = np.asarray(token_dict["cell_raw_index"])
 
     def __len__(self):
         return self.real_indices.shape[0]
 
     def __getitem__(self, idx):
         return (
-            torch.as_tensor(self.real_indices[idx], dtype=torch.long),
-            torch.as_tensor(self.attention_mask[idx], dtype=torch.bool),
-            torch.as_tensor(self.connect_comp[idx], dtype=torch.long),
-            torch.as_tensor(self.rna_type[idx], dtype=torch.long),
-            str(self.cell_raw_index[idx]),
-            torch.as_tensor(self.neighbor_gene_dist[idx], dtype=torch.float),
-            torch.as_tensor(self.exp[idx], dtype=torch.float),
+            self.real_indices[idx],
+            self.attention_mask[idx],
+            self.connect_comp[idx],
+            self.rna_type[idx],
+            self.cell_raw_index[idx],
+            self.neighbor_gene_dist[idx],
+            self.exp[idx],
         )
 
 def run_bb_inference_fast(
@@ -730,7 +745,8 @@ def run_bb_inference_fast(
     )
     pipeline.model.eval()
 
-    esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu")
+    # esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu")
+    esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu").to(device)
 
     pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
     weight_mode = config_train.get("weight_mode", "expression")
@@ -740,14 +756,20 @@ def run_bb_inference_fast(
     all_indices = []
     all_embeddings = []
 
-    with torch.no_grad():
+    # with torch.no_grad():
+    with torch.inference_mode():
         for real_indices, attention_mask, connect_comp, rna_type, cell_raw_idx, neighbor_gene_distribution, exp in tqdm(
-            dataloader,
-            desc="[Stage1 memory] Inference",
+                dataloader,
+                desc="[Stage1 memory] Inference",
         ):
-            real_indices_view = real_indices.view(-1).long()
-            neighbor_gene_distribution = neighbor_gene_distribution.long()
+            real_indices = real_indices.to(device, non_blocking=True)
+            attention_mask = attention_mask.to(device, non_blocking=True)
+            connect_comp = connect_comp.to(device, non_blocking=True)
+            rna_type = rna_type.to(device, non_blocking=True)
+            neighbor_gene_distribution = neighbor_gene_distribution.to(device, non_blocking=True).long()
+            exp = exp.to(device, non_blocking=True)
 
+            real_indices_view = real_indices.view(-1).long()
             esm_embedding = torch.index_select(
                 esm_embedding_map,
                 dim=0,
@@ -759,18 +781,8 @@ def run_bb_inference_fast(
                 esm_embedding.shape[-1],
             )
 
-            sequence_mask = torch.where(
-                real_indices == 1,
-                torch.zeros_like(real_indices),
-                torch.ones_like(real_indices),
-            )
-
-            real_indices = real_indices.to(device)
-            attention_mask = attention_mask.to(device)
-            connect_comp = connect_comp.to(device)
-            rna_type = rna_type.to(device)
-            esm_embedding = esm_embedding.to(device)
-            neighbor_gene_distribution = neighbor_gene_distribution.to(device)
+            # better than torch.where(...)
+            sequence_mask = (~attention_mask).long()
 
             output = pipeline.model(
                 real_indices,
@@ -781,9 +793,8 @@ def run_bb_inference_fast(
                 neighbor_gene_distribution,
                 sequence_mask,
             )
-            output = output.detach().cpu()
 
-            # ====== Pooling ======
+            # ====== Pooling on GPU ======
             if weight_mode == "expression":
                 aux = torch.zeros((exp.shape[0], 2), device=exp.device)
                 cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device)
@@ -808,6 +819,8 @@ def run_bb_inference_fast(
                 weight_decay=config_train.get("weight_decay", 0.998),
                 temperature=config_train.get("temperature", 300),
             )
+
+            output = output.detach().cpu()
 
             all_indices.extend(cell_raw_idx)
             all_embeddings.append(output.numpy())

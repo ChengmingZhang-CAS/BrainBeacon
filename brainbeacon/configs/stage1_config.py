@@ -4,7 +4,8 @@ stage1_config = {
     'retake_training': False,
     'dim_feedforward': 1024,
     'nheads': 16,
-    'masking_p': 0.15,
+    # 'masking_p': 0.15,
+    'masking_p': 0.0,
     'nlayers': 16,
     'dropout': 0.1,
     # 'dim_model': 1024,
@@ -15,7 +16,8 @@ stage1_config = {
     'n_connect_comp': 46714,
     'n_aux': 20,
     'n_rna_type': 33,
-    'batch_size': 16,
+    'batch_size': 64,
+    # 'num_workers': 1,
     'num_workers': 4,
     'context_length': 1000,
     'lr': 1e-5,
@@ -45,7 +47,6 @@ stage1_config = {
     'expr_mode': None,
     'force_tokenize': False,
     'use_dev_abs': True,
-
 
 
 }
