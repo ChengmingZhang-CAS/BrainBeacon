@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import torch
 import anndata as ad
@@ -10,8 +12,7 @@ import warnings
 import scanpy as sc
 from importlib.resources import files
 from brainbeacon.configs.config import resolve_path, DEFAULT_PATHS
-from brainbeacon.configs.stage1_config import stage1_config
-config_train = stage1_config
+from brainbeacon.configs.stage1_config import config_train
 
 def extract_input_embeddings(
         bb_pretrain_path: str,

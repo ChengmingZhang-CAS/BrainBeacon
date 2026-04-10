@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 from typing import Union, List
 
 from brainbeacon.brain_beacon import BrainBeacon
-from brainbeacon.configs.stage1_config import stage1_config
+from brainbeacon.configs.stage1_config import config_train as stage1_config
 
 
 def normalize_brainbeacon_model_config(model_config: dict) -> dict:

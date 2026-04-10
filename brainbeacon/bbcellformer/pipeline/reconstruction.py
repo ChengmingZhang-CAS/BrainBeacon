@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # reconstruction.py - Yifeng's version
 import torch
 import torch.nn as nn

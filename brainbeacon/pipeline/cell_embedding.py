@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # cell_embedding.py - Yifeng's version
 import os
 import time
@@ -17,7 +19,7 @@ from typing import Union, List
 from brainbeacon.brain_beacon import BrainBeacon
 from brainbeacon.tokenizer import set_seed
 from brainbeacon.tokenizer import tokenize_adata_in_memory
-from brainbeacon.configs.stage1_config import stage1_config as default_config1
+from brainbeacon.configs.stage1_config import config_train as default_config1
 from brainbeacon.configs.stage2_config import stage2_config as default_config2
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 

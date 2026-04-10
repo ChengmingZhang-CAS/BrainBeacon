@@ -11,7 +11,7 @@ from typing import Any
 import torch
 import yaml
 
-from brainbeacon.configs.config_train import config_train as default_config_train
+from brainbeacon.configs.stage1_config import config_train as default_config_train
 
 
 BOOL_TRUE = {"1", "true", "t", "yes", "y", "on"}
@@ -603,10 +603,10 @@ def main() -> None:
             )
 
             token_data_path = run_tokenization(
-                adata_path=adata_path,
+                adata=adata,
                 bb_token_dir=token_data_path,
                 gene_dict_path=gene_dict_path,
-                specie=tokenize_specie,
+                species=tokenize_specie,
                 assay=tokenize_assay,
                 use_hvg=use_hvg,
                 n_hvg=n_hvg,
