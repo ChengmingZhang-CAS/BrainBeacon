@@ -46,7 +46,7 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
     if order_required and split:
         warnings.warn('When cell order required to be preserved, dataset split will be ignored.')
 
-    with torch.no_grad():
+    with torch.inference_mode():
         model.eval()
         epoch_loss = []
         order_list = []
@@ -82,11 +82,11 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                     input_dict = {}
                     for k in data_dict:
                         if k == 'x_seq':
-                            input_dict[k] = data_dict[k].index_select(0, cur).to(device)
+                            input_dict[k] = data_dict[k].index_select(0, cur).to(device, non_blocking=True)
                         elif k == 'gene_mask':
-                            input_dict[k] = data_dict[k].to(device)
+                            input_dict[k] = data_dict[k].to(device, non_blocking=True)
                         elif k not in ['gene_list', 'split']:
-                            input_dict[k] = data_dict[k][cur].to(device)
+                            input_dict[k] = data_dict[k][cur].to(device, non_blocking=True)
 
                     x_dict = XDict(input_dict)
                     out_dict, loss = model(x_dict, data_dict['gene_list'], output_attentions=output_attentions)
@@ -109,11 +109,11 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                     input_dict = {}
                     for k in data_dict:
                         if k == 'x_seq':
-                            input_dict[k] = data_dict[k].index_select(0, cur).to(device)
+                            input_dict[k] = data_dict[k].index_select(0, cur).to(device, non_blocking=True)
                         elif k == 'gene_mask':
-                            input_dict[k] = data_dict[k].to(device)
+                            input_dict[k] = data_dict[k].to(device, non_blocking=True)
                         elif k not in ['gene_list', 'split']:
-                            input_dict[k] = data_dict[k][cur].to(device)
+                            input_dict[k] = data_dict[k][cur].to(device, non_blocking=True)
                     x_dict = XDict(input_dict)
                     out_dict, loss = model(x_dict, data_dict['gene_list'], output_attentions=output_attentions)
                     epoch_loss.append(loss.item())
@@ -218,7 +218,9 @@ class ReconstructPipeline(Pipeline):
             batch_gene_list=batch_gene_list,
             covariate_encoders=covariate_encoders,
         )
-        dataloader = DataLoader(dataset, batch_size=None, shuffle=True, num_workers=config['workers'])
+        num_workers = config['workers'] if config['workers'] > 0 else 4
+        dataloader = DataLoader(dataset, batch_size=None, shuffle=True, num_workers=num_workers,
+                                pin_memory=True, prefetch_factor=2)
         optim = torch.optim.AdamW(self.model.parameters(), lr=config['lr'], weight_decay=config['wd'])
 
         if config['scheduler'] == 'plat':

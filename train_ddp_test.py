@@ -175,7 +175,7 @@ def main(device, args, config_train):
     train_loader = DataLoader(train_dataset, batch_size=config_train["batch_size"])
     val_loader = DataLoader(valid_dataset, batch_size=config_train["batch_size"])
 
-    esm_embedding_map = torch.load(config_train["esm_embedding_path"], weights_only=False)
+    esm_embedding_map = torch.load(config_train["esm_embedding_path"], weights_only=False).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=config_train["lr"])
     if ckpt:

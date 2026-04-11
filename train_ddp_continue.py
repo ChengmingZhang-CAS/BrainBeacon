@@ -100,10 +100,32 @@ def main(rank, args, config_train):
     if rank == 0:
         logger.info(f'Label weights: {label_weights}')
 
+    # Non-strict checkpoint loading: skip shape-mismatched params (e.g. homo_connect_embedding)
     if config_train['pretrain_ckpt']:
         print(f"load ckpt from {config_train['pretrain_ckpt']}")
         ckpt = torch.load(config_train['pretrain_ckpt'], map_location='cpu')
-        model.load_state_dict(ckpt['model_state_dict'])
+        pretrained_dict = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+        model_dict = model.state_dict()
+        compatible_dict = {}
+        skipped = []
+        for k, v in pretrained_dict.items():
+            if k in model_dict and v.shape == model_dict[k].shape:
+                compatible_dict[k] = v
+            elif k in model_dict:
+                skipped.append(f"{k}: ckpt {tuple(v.shape)} vs model {tuple(model_dict[k].shape)}")
+            else:
+                skipped.append(f"{k}: not in model")
+        if skipped:
+            print(f"[Warning] Skipped {len(skipped)} params during ckpt loading:")
+            for s in skipped:
+                print(f"  {s}")
+        print(f"[INFO] Loaded {len(compatible_dict)}/{len(model_dict)} params from ckpt")
+        model_dict.update(compatible_dict)
+        model.load_state_dict(model_dict)
+        # Don't restore optimizer if shapes changed (e.g. n_connect_comp mismatch)
+        if skipped:
+            print("[INFO] Shape mismatch detected, skipping optimizer state restore")
+            ckpt = None
     else:
         ckpt = None
     model = model.to(device)
@@ -307,7 +329,7 @@ if __name__ == '__main__':
     parser.add_argument('--density_token_idx', type=int, default=2, help='Density token position index')
     parser.add_argument('--max_total_samples', type=int, default=None, help='Maximum total training samples for data ablation')
     parser.add_argument('--max_steps', type=int, default=None, help='Maximum total training steps (None means no limit)')
-    parser.add_argument('--accumulation_steps', type=int, default=1, help='Gradient accumulation steps (1=no accumulation, >1=mix multiple samples per optimizer update)')
+    parser.add_argument('--accumulation_steps', type=int, default=4, help='Gradient accumulation steps (default=4 for continue training)')
     parser.add_argument('--exp_name', type=str, default=None, help='Experiment name prefix for logdir (e.g. ABL1)')
     parser.add_argument('--config', type=str, default=None, help='Path to YAML config file (overrides config_train.py)')
     args = parser.parse_args()
@@ -319,4 +341,5 @@ if __name__ == '__main__':
     # set_seed(2025)
     # torch.multiprocessing.spawn(main, args=(args, ), nprocs=args.world_size * args.nproc_per_node, join=True)
     # torch.multiprocessing.spawn(main, args=(args,), nprocs=args.nproc_per_node)
-    main(args.local_rank, args, config_train)
+    local_rank = int(os.environ.get('LOCAL_RANK', args.local_rank or 0))
+    main(local_rank, args, config_train)

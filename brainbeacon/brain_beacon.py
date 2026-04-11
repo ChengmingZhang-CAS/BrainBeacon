@@ -417,14 +417,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
         rna_type = rna_type[0]
         neighbor_gene_distribution = neighbor_gene_distribution[0].long()
 
+        masked_indices = masked_indices.to(device, non_blocking=True)
+        attention_mask = attention_mask.to(device, non_blocking=True)
+        connect_comp = connect_comp.to(device, non_blocking=True)
+        rna_type = rna_type.to(device, non_blocking=True)
+        real_indices = real_indices.to(device, non_blocking=True)
+        neighbor_gene_distribution = neighbor_gene_distribution.to(device, non_blocking=True)
+
+        # index_select on GPU directly (esm_embedding_map already on device)
         real_indices_view = real_indices.view(-1).long()
         esm_embedding = torch.index_select(esm_embedding_map, dim=0, index=real_indices_view)
         esm_embedding = esm_embedding.view(real_indices.shape[0], real_indices.shape[1], esm_embedding.shape[-1])
-
-        masked_indices, attention_mask, connect_comp, rna_type, esm_embedding, real_indices, \
-            neighbor_gene_distribution = masked_indices.to(device), attention_mask.to(device), \
-            connect_comp.to(device), rna_type.to(device), esm_embedding.to(device), real_indices.to(device), \
-            neighbor_gene_distribution.to(device)
 
         # Skip DDP gradient sync on non-update steps for efficiency
         is_update_step = (micro_step + 1) % accumulation_steps == 0
