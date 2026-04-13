@@ -28,7 +28,7 @@ cell_density_bin_dict = {
     "cell_density_bin_3": 18,
     "cell_density_bin_4": 19,
 }
-MAX_LENGTH = 4096
+MAX_LENGTH = 1000
 AUX_TOKEN = 20
 
 DEFAULT_PATHS = {

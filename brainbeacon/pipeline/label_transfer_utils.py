@@ -269,16 +269,16 @@ def _preprocess_one_adata(
         return adata_full[:, keep_mask].copy()
 
     # 5) same-species (or no-conversion) branch
-    if info["specie"] == target_species or not convert_id:
+    if info["species"] == target_species or not convert_id:
         # note: if species != target and convert_id=False, namespaces may differ -> add_genes may not match
-        if info["specie"] != target_species and not convert_id and add_genes:
+        if info["species"] != target_species and not convert_id and add_genes:
             warnings.warn("[WARN] convert_id=False and species differ from target; add_genes may not match current gene namespace.")
 
         if not convert_id:
             # Ensure Ensembl IDs for BrainBeacon input
             if not adata.var_names.str.startswith("ENS").all():
                 print(f"[WARN] {info['data_name']} gene IDs not in Ensembl format, running ensure_ensembl_ids()...")
-                adata = ensure_ensembl_ids(adata, species=info["specie"])
+                adata = ensure_ensembl_ids(adata, species=info["species"])
 
         # dedup before HVG
         adata = adata[:, ~adata.var["genenames"].duplicated()].copy()

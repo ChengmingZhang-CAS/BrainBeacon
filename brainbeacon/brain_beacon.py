@@ -123,10 +123,10 @@ class PretrainJoblibDataset(Dataset):
             return self.__getitem__(idx + 1)
 
 
-class GeneEmbedding(nn.Module):
+class GeneEmbedding_old(nn.Module):
     def __init__(self, n_tokens, n_connect_comp, n_rna_type, n_neighbor, dim_model, n_aux,
                  use_gene_id_emb=True, use_homo_emb=True, use_rna_type_emb=True):
-        super(GeneEmbedding, self).__init__()
+        super(GeneEmbedding_old, self).__init__()
         self.use_gene_id_emb = use_gene_id_emb
         self.use_homo_emb = use_homo_emb
         self.use_rna_type_emb = use_rna_type_emb
@@ -172,6 +172,51 @@ class GeneEmbedding(nn.Module):
         return x_gene_emb + x_connect_emb + x_rna_emb
 
 
+class GeneEmbedding(nn.Module):
+    def __init__(self, n_tokens, n_connect_comp, n_rna_type, dim_model, n_aux,
+                 use_gene_id_emb=True, use_homo_emb=True, use_rna_type_emb=True):
+        super(GeneEmbedding, self).__init__()
+        self.use_gene_id_emb = use_gene_id_emb
+        self.use_homo_emb = use_homo_emb
+        self.use_rna_type_emb = use_rna_type_emb
+        self.n_tokens = n_tokens
+        self.n_aux = n_aux
+
+        self.basic_embedding = nn.Embedding(
+            num_embeddings=n_tokens + n_aux,
+            embedding_dim=dim_model,
+            padding_idx=1,
+        )
+        self.homo_connect_embedding = nn.Embedding(
+            num_embeddings=n_connect_comp + 1,
+            embedding_dim=dim_model,
+        )
+        self.rna_type_embedding = nn.Embedding(
+            num_embeddings=n_rna_type + 1,
+            embedding_dim=dim_model,
+        )
+
+    def forward(self, x_gene_id, x_connect_id, x_rna_type):
+        if self.use_gene_id_emb:
+            x_gene_emb = self.basic_embedding(x_gene_id.long())
+        else:
+            mean_emb = self.basic_embedding.weight[self.n_tokens:].mean(dim=0)
+            x_gene_emb = mean_emb[None, None, :].expand(x_gene_id.shape[0], x_gene_id.shape[1], -1)
+
+        if self.use_homo_emb:
+            x_connect_emb = self.homo_connect_embedding(x_connect_id.long())
+        else:
+            mean_emb = self.homo_connect_embedding.weight[1:].mean(dim=0)
+            x_connect_emb = mean_emb[None, None, :].expand(x_connect_id.shape[0], x_connect_id.shape[1], -1)
+
+        if self.use_rna_type_emb:
+            x_rna_emb = self.rna_type_embedding(x_rna_type.long())
+        else:
+            mean_emb = self.rna_type_embedding.weight[1:].mean(dim=0)
+            x_rna_emb = mean_emb[None, None, :].expand(x_rna_type.shape[0], x_rna_type.shape[1], -1)
+
+        return x_gene_emb + x_connect_emb + x_rna_emb
+
 class BrainBeacon(nn.Module):
     def __init__(
             self,
@@ -184,9 +229,9 @@ class BrainBeacon(nn.Module):
             n_connect_comp,
             n_aux,
             n_rna_type,
-            n_neighbor,
             esm_embedding_dim,
-            total_context_length,
+            n_neighbor=4,  # legacy param
+            total_context_length=1000,  # legacy param
             use_gene_id_emb=True,
             use_homo_emb=True,
             use_rna_type_emb=True,
@@ -194,7 +239,7 @@ class BrainBeacon(nn.Module):
             use_pos_emb=True,  # add positional embedding usage flag
             use_density_emb=True,  # add density token usage flag
             density_token_idx=2,  # density token position (default: 2 when specie=True, assay=True)
-            neighbor_enhance=True,
+            neighbor_enhance=True,  # gene deviation
     ):
         super(BrainBeacon, self).__init__()
         self.use_esm_emb = use_esm_emb
@@ -203,7 +248,7 @@ class BrainBeacon(nn.Module):
         self.density_token_idx = density_token_idx
         # self.embedding = GeneEmbedding(n_tokens, n_connect_comp, n_rna_type, n_neighbor, dim_model, n_aux)
         self.embedding = GeneEmbedding(
-            n_tokens, n_connect_comp, n_rna_type, n_neighbor, dim_model, n_aux,
+            n_tokens, n_connect_comp, n_rna_type, dim_model, n_aux,
             use_gene_id_emb=use_gene_id_emb,
             use_homo_emb=use_homo_emb,
             use_rna_type_emb=use_rna_type_emb
@@ -234,11 +279,11 @@ class BrainBeacon(nn.Module):
 
         self.initialize_weights()
 
-    def get_esm_embedding(self, x):
-        x_view = x.view(-1).long()
-        esm_embedding = torch.index_select(self.esm_embedding_map, dim=0, index=x_view)
-        esm_embedding = esm_embedding.view(x.shape[0], x.shape[1], esm_embedding.shape[-1])
-        return esm_embedding
+    # def get_esm_embedding(self, x):
+    #     x_view = x.view(-1).long()
+    #     esm_embedding = torch.index_select(self.esm_embedding_map, dim=0, index=x_view)
+    #     esm_embedding = esm_embedding.view(x.shape[0], x.shape[1], esm_embedding.shape[-1])
+    #     return esm_embedding
 
     def initialize_weights(self):
         for m in self.parameters():

@@ -13,237 +13,9 @@ from typing import List
 from brainbeacon.tokenizer import set_seed
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
 from brainbeacon.bbcellformer.pipeline.cell_type_annotation import CellTypeAnnotationPipeline
-from brainbeacon.pipeline.cell_embedding_old import run_tokenization, run_bb_inference
 
 from brainbeacon.configs.config import resolve_path
-from brainbeacon.configs.stage1_config import config_train
 
-def train_encoder_on_adata(
-    adata,
-    bb_embedding_path,            # path to .npz embedding file
-    bb_pretrain_path,             # path to BB encoder backbone weights
-    cellformer_version,          # prefix like 'cellformer', used to find .yaml/.pt
-    cellformer_directory,        # path to folder with pretrained CellFormer model_raw files
-    device,
-    cellformer_pretrain_path=None,  # Not used here, but required by the pipeline
-    use_batch=True,
-    use_spatial=True,
-    do_fit=True,
-    fit_epochs=500,  # can be set in the pipeline
-    slice_sample=False,  # NEW
-    enc_mod="flowformer",
-    save_model_path=None,  # optional: save .pt model_raw weights
-):
-    # Load AnnData file
-    data = adata.copy()
-    data.obs_names_make_unique()
-    # set train/valid split
-    np.random.seed(42)
-    data.obs['split'] = 'train'
-    if 'slice' not in data.obs.columns:
-        data.obs['slice'] = data.obs['batch'] if 'batch' in data.obs.columns else 'default_slice'
-    for batch_id in data.obs['slice'].unique():
-        idx = data.obs['slice'] == batch_id
-        cell_idx = np.where(idx)[0]
-        n_valid = max(1, int(len(cell_idx) * 0.1))  # Ensure at least one cell is selected for validation
-        valid_cells = np.random.choice(cell_idx, n_valid, replace=False)
-        data.obs.iloc[valid_cells, data.obs.columns.get_loc('split')] = 'valid'
-
-    # load brainbeacon embeddings
-    data.obsm['bb_emb'] = np.load(bb_embedding_path)['embeddings']
-
-    # Add batch info if enabled
-    if use_batch and 'batch' not in data.obs.columns:
-        data.obs['batch'] = data.obs['slice']
-
-    if use_spatial and 'spatial' in data.obsm:
-        all_coords = []
-
-        for batch_id in data.obs['batch'].unique():
-            idx = data.obs['batch'] == batch_id
-            spatial = data.obsm['spatial'][idx]
-            spatial = np.asarray(spatial)  # assure spatial is a NumPy array
-            spatial_min = spatial.min(axis=0)
-            spatial_max = spatial.max(axis=0)
-            normalized = (spatial - spatial_min) / (spatial_max - spatial_min + 1e-8)
-
-            data.obs.loc[idx, 'x_FOV_px'] = normalized[:, 0]
-            data.obs.loc[idx, 'y_FOV_px'] = normalized[:, 1]
-
-    # Initialize CellPLM embedding pipeline
-    overwrite_config = {
-        "name": f"bb_{enc_mod}",
-        "enc_mod": enc_mod,
-        'objective': 'imputation',
-        'mask_node_rate': 0.95,
-        'mask_feature_rate': 0.25,
-        'max_batch_size': 2000,
-        'mask_type': 'hidden',
-        # 'mask_type': 'input',
-    }
-    # clear GPU memory before re-initializing the pipeline
-    torch.cuda.empty_cache()
-    pipeline = ReconstructPipeline(
-        pretrain_prefix=cellformer_version,
-        overwrite_config=overwrite_config,
-        pretrain_directory=cellformer_directory,
-        bb_pretrain_path=bb_pretrain_path,
-        cellformer_pretrain_path=cellformer_pretrain_path,  # Not used here
-        use_pretrain=True)
-    if do_fit:
-        # Only sample one slice if requested
-        if slice_sample:
-            # np.random.seed(42)
-            rng = np.random.RandomState(None)  # randomState with local randomness
-            chosen_slice = rng.choice(data.obs['slice'].unique())
-            fit_data = data[data.obs['slice'] == chosen_slice].copy()
-            print(f"Training only on slice: {chosen_slice} ({fit_data.n_obs} cells)")
-            MAX_CELLS = 10000
-            if fit_data.n_obs > MAX_CELLS:
-                print(f"[Warning] Too many cells in slice ({fit_data.n_obs}), subsampling to {MAX_CELLS}")
-                sampled_indices = np.random.choice(fit_data.n_obs, MAX_CELLS, replace=False)
-                fit_data = fit_data[sampled_indices].copy()
-                print("fit data shape:", fit_data.shape)
-
-        else:
-            fit_data = data.copy()
-        pipeline.fit(
-            fit_data,  # AnnData object
-            train_config={'epochs': fit_epochs},
-            split_field='split',
-            train_split='train',
-            valid_split='valid',
-            device=device
-        )
-
-    if save_model_path is not None:
-        torch.save(pipeline.model.state_dict(), save_model_path)
-        print(f"Model saved to {save_model_path}")
-    del pipeline.model
-    torch.cuda.empty_cache()
-    return data
-
-
-def train_encoder_on_multi_adata(
-        dataset_info_list: List[dict],
-        bb_ckpt_path: str,
-        initial_ckpt_path: str,
-        output_dir: str,
-        config_train: dict,
-        output_prefix: str = "brainbeacon",
-        num_global_epochs: int = 100,
-        per_dataset_epochs: int = 50,
-        shuffle_each_epoch: bool = True,
-        slice_sample: bool = True,
-        cd_weight: float = 0.02,
-        n_hvg: int = 1000,
-        batch_size: int = 64,
-        save_all_epochs: bool = False,
-        enc_mod: str = "flowformer",
-        path_dict: dict = None,
-        device=None,
-) -> str:
-    """
-    Train CellFormer encoder on multiple datasets using BB embeddings as input.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    current_ckpt_path = initial_ckpt_path
-    save_model_dir = os.path.join(output_dir, "checkpoints")
-    os.makedirs(save_model_dir, exist_ok=True)
-
-    for global_epoch in range(num_global_epochs):
-        print(f"\n========== Global Epoch {global_epoch + 1} ==========")
-        datasets_this_epoch = dataset_info_list.copy()
-        if shuffle_each_epoch:
-            random.seed(global_epoch + 42)
-            random.shuffle(datasets_this_epoch)
-
-        for ds in datasets_this_epoch:
-            data_name = ds["data_name"]
-            data_dir = ds["data_dir"]
-            adata_name = ds["adata_name"]
-            specie = ds["specie"]
-            assay = ds["assay"]
-
-            print(f"\n--- Training on {data_name} ---")
-
-            adata_path = os.path.join(data_dir, adata_name)
-            adata = sc.read_h5ad(adata_path)
-            adata.obs["platform"] = assay
-
-            gene_dict_path = resolve_path("GENE_DICT_PATH", path_dict)
-
-            output_dir_epoch = os.path.join(output_dir, data_name)
-            os.makedirs(output_dir_epoch, exist_ok=True)
-
-            # --- Save checkpoint only when needed ---
-            if save_all_epochs or global_epoch == num_global_epochs - 1:
-                save_model_path = os.path.join(save_model_dir, f"{enc_mod}_epoch{global_epoch + 1:02d}.pt")
-            else:
-                save_model_path = os.path.join(save_model_dir, "tmp_last.pt")  # temporary overwrite
-
-            # Tokenization
-            bb_token_dir = os.path.join(output_dir_epoch, f"{output_prefix}_bb_token_dir")
-            # bb_token_dir = os.path.join(output_dir_epoch, f"bb_token")
-            # config_train["batch_size"] = batch_size  # Set batch size for tokenization
-            if assay == "snrna":
-                config_train["batch_size"] = min(batch_size, 16)
-            else:
-                config_train["batch_size"] = batch_size
-
-            token_data_path = run_tokenization(
-                adata_path=adata_path,
-                bb_token_dir=bb_token_dir,
-                gene_dict_path=gene_dict_path,
-                specie=specie,
-                assay=assay,
-                use_hvg=True,
-                n_hvg=n_hvg,
-                force_tokenize=False
-            )
-
-            # BB Inference
-            bb_embedding_path = os.path.join(output_dir_epoch, f"{output_prefix}_bb_embeddings.npz")
-            if os.path.exists(bb_embedding_path):
-                print(f"Found existing BB embeddings at: {bb_embedding_path}")
-            else:
-                run_bb_inference(
-                    adata=adata,
-                    token_data_path=token_data_path,
-                    config_train=config_train,
-                    pretrain_ckpt=bb_ckpt_path,
-                    device=device,
-                    save_path=bb_embedding_path
-                )
-
-            # Train CellFormer encoder
-            adata = train_encoder_on_adata(
-                adata=adata,
-                bb_embedding_path=bb_embedding_path,
-                bb_pretrain_path=bb_ckpt_path,
-                cellformer_version="cellformer",
-                cellformer_directory=os.path.dirname(initial_ckpt_path),
-                device=device,
-                cellformer_pretrain_path=current_ckpt_path,
-                use_batch=True,
-                use_spatial=True,
-                do_fit=True,
-                fit_epochs=per_dataset_epochs,
-                slice_sample=slice_sample,
-                enc_mod=enc_mod,
-                save_model_path=save_model_path
-            )
-
-            current_ckpt_path = save_model_path
-            print(f"Finished training on {data_name}, model_raw saved to: {save_model_path}")
-
-            # Clean up
-            import gc
-            del adata
-            torch.cuda.empty_cache()
-            gc.collect()
-
-    return current_ckpt_path
 
 def prepare_adata(
     adata_list: List[dict],
@@ -452,181 +224,181 @@ def run_bbcellformer_annotation(
 
     return results_dict
 
-
-def run_label_transfer_pipeline(
-    encoder_adata_list: List[dict],
-    source_adata_list: List[dict],
-    target_adata_list: List[dict],
-    bb_ckpt_path: str,
-    cellplm_ckpt_path: str,
-    output_dir: str,
-    output_prefix: str,
-    config_update: dict = None,
-    n_hvg: int = 1000,
-    cd_weight: float = 0.02,
-    use_hvg: bool = True,
-    use_batch: bool = True,
-    use_spatial: bool = True,
-    weight_mode: str = "expression",
-    force_tokenize: bool = True,
-    do_fit: bool = True,
-    fit_epochs: int = 500,
-    shuffle_each_epoch=True,
-    slice_sample=False,
-    enc_mod: str = "flowformer",
-    save_model: bool = True,
-    save_model_path: str = None,
-    do_train_encoder: bool = True,
-    num_global_epochs: int = 100,
-    per_dataset_epochs: int = 50,
-    label_key='cell_label',
-    device=None
-):
-    """Run label transfer with an encoder-training stage.
-
-    This pipeline provides an end-to-end workflow for:
-    1) Training an encoder using ``encoder_adata_list``.
-    2) Running supervised label transfer from ``source_adata_list`` to ``target_adata_list``.
-
-    Notes
-    -----
-    The function uses the default training configuration from
-    ``brainbeacon.configs.config_train`` and applies runtime overrides via
-    ``config_update`` (recommended). Internally, it is recommended to copy the
-    global config before updating to avoid side effects across runs.
-
-    Parameters
-    ----------
-    encoder_adata_list : list[dict]
-        Dataset specifications used for encoder training (when ``do_train_encoder=True``).
-    source_adata_list : list[dict]
-        Source dataset specifications that include cell labels (supervision for transfer).
-    target_adata_list : list[dict]
-        Target dataset specifications to predict labels for.
-    bb_ckpt_path : str
-        Path to BrainBeacon pretrained checkpoint.
-    cellplm_ckpt_path : str
-        Path to the initial CellPLM/CellFormer checkpoint. If ``do_train_encoder=False``,
-        this checkpoint is used directly.
-    output_dir : str
-        Output directory for intermediate files and results.
-    output_prefix : str
-        Prefix used to name output files.
-
-    config_update : dict, optional
-        Overrides applied on top of the default training configuration.
-    n_hvg : int, default 1000
-        Number of HVGs to use when ``use_hvg=True``.
-    cd_weight : float, default 0.02
-        Cell-density token weight used by expression-weighted pooling.
-    use_hvg : bool, default True
-        Whether to use HVG selection in tokenization/training steps.
-    use_batch : bool, default True
-        Whether to enable batch-related options in annotation.
-    use_spatial : bool, default True
-        Whether to enable spatial-related options in annotation.
-    weight_mode : str, default "expression"
-        Pooling mode for embedding aggregation.
-    force_tokenize : bool, default True
-        Whether to force regeneration of intermediate tokenization outputs (project-specific).
-
-    do_fit : bool, default True
-        Whether to fit/fine-tune the annotation model.
-    fit_epochs : int, default 500
-        Number of epochs for fitting when ``do_fit=True``.
-    shuffle_each_epoch : bool, default True
-        Whether to shuffle samples each epoch during encoder training.
-    slice_sample : bool, optional
-        If True, select one slice for training (project-specific behavior).
-    enc_mod : str, default "flowformer"
-        Encoder module variant.
-
-    save_model : bool, default True
-        Whether to save the fitted model checkpoint.
-    save_model_path : str, optional
-        Path to save the model checkpoint. If None, a default path is used.
-
-    do_train_encoder : bool, default True
-        If True, train an encoder using ``encoder_adata_list`` before label transfer.
-    num_global_epochs : int, default 100
-        Number of global epochs for multi-dataset encoder training.
-    per_dataset_epochs : int, default 50
-        Number of epochs per dataset in multi-dataset encoder training.
-
-    label_key : str, default "cell_label"
-        Key in ``adata.obs`` used as the supervision label.
-    device : torch.device or str, optional
-        Device to run on. If None, uses CUDA if available, else CPU.
-
-    Returns
-    -------
-    target_adata : anndata.AnnData or dict
-        Predicted target AnnData (or a dict of targets) returned by the internal annotation routine.
-    """
-
-    os.makedirs(output_dir, exist_ok=True)
-    set_seed(42)
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if config_train is None:
-        raise ValueError("`config_train` must be provided.")
-    config_train.update({
-        "weight_mode": weight_mode,
-        "cd_weight": cd_weight,
-        "masking_p": 0,
-        "batch_size": 64,
-        "expr_mode": None,
-        "use_gene_id_emb": True,
-        "use_homo_emb": True,
-        "use_rna_type_emb": True,
-        "use_esm_emb": True,
-    })
-    if config_update:
-        config_train.update(config_update)
-
-    # ====== Step 1: Train encoder (if enabled) ======
-    if do_train_encoder:
-        encoder_ckpt_path = train_encoder_on_multi_adata(
-            dataset_info_list=encoder_adata_list,
-            bb_ckpt_path=bb_ckpt_path,
-            initial_ckpt_path=cellplm_ckpt_path,
-            output_dir=output_dir,
-            config_train=config_train,
-            num_global_epochs=num_global_epochs,
-            per_dataset_epochs=per_dataset_epochs,
-            shuffle_each_epoch=shuffle_each_epoch,
-            slice_sample=slice_sample,
-            cd_weight=cd_weight,
-            n_hvg=n_hvg,
-            enc_mod=enc_mod,
-            device=device
-        )
-    else:
-        encoder_ckpt_path = cellplm_ckpt_path  # Use existing encoder
-
-    print(f"Using encoder checkpoint: {encoder_ckpt_path}")
-
-    # ====== Step 2: Run annotation and prediction ======
-    target_adata = run_bbcellformer_annotation(
-        source_adata_list=source_adata_list,
-        target_adata_list=target_adata_list,
-        output_dir=output_dir,
-        output_prefix=output_prefix,
-        bb_pretrain_path=bb_ckpt_path,
-        cellformer_pretrain_path=encoder_ckpt_path,
-        label_key=label_key,
-        device=device,
-        use_batch=use_batch,
-        use_spatial=use_spatial,
-        do_fit=do_fit,
-        fit_epochs=fit_epochs,
-        slice_sample=slice_sample,
-        enc_mod=enc_mod,
-        save_model_path=save_model_path,
-    )
-
-    return target_adata
+#
+# def run_label_transfer_pipeline(
+#     encoder_adata_list: List[dict],
+#     source_adata_list: List[dict],
+#     target_adata_list: List[dict],
+#     bb_ckpt_path: str,
+#     cellplm_ckpt_path: str,
+#     output_dir: str,
+#     output_prefix: str,
+#     config_update: dict = None,
+#     n_hvg: int = 1000,
+#     cd_weight: float = 0.02,
+#     use_hvg: bool = True,
+#     use_batch: bool = True,
+#     use_spatial: bool = True,
+#     weight_mode: str = "expression",
+#     force_tokenize: bool = True,
+#     do_fit: bool = True,
+#     fit_epochs: int = 500,
+#     shuffle_each_epoch=True,
+#     slice_sample=False,
+#     enc_mod: str = "flowformer",
+#     save_model: bool = True,
+#     save_model_path: str = None,
+#     do_train_encoder: bool = True,
+#     num_global_epochs: int = 100,
+#     per_dataset_epochs: int = 50,
+#     label_key='cell_label',
+#     device=None
+# ):
+#     """Run label transfer with an encoder-training stage.
+#
+#     This pipeline provides an end-to-end workflow for:
+#     1) Training an encoder using ``encoder_adata_list``.
+#     2) Running supervised label transfer from ``source_adata_list`` to ``target_adata_list``.
+#
+#     Notes
+#     -----
+#     The function uses the default training configuration from
+#     ``brainbeacon.configs.config_train`` and applies runtime overrides via
+#     ``config_update`` (recommended). Internally, it is recommended to copy the
+#     global config before updating to avoid side effects across runs.
+#
+#     Parameters
+#     ----------
+#     encoder_adata_list : list[dict]
+#         Dataset specifications used for encoder training (when ``do_train_encoder=True``).
+#     source_adata_list : list[dict]
+#         Source dataset specifications that include cell labels (supervision for transfer).
+#     target_adata_list : list[dict]
+#         Target dataset specifications to predict labels for.
+#     bb_ckpt_path : str
+#         Path to BrainBeacon pretrained checkpoint.
+#     cellplm_ckpt_path : str
+#         Path to the initial CellPLM/CellFormer checkpoint. If ``do_train_encoder=False``,
+#         this checkpoint is used directly.
+#     output_dir : str
+#         Output directory for intermediate files and results.
+#     output_prefix : str
+#         Prefix used to name output files.
+#
+#     config_update : dict, optional
+#         Overrides applied on top of the default training configuration.
+#     n_hvg : int, default 1000
+#         Number of HVGs to use when ``use_hvg=True``.
+#     cd_weight : float, default 0.02
+#         Cell-density token weight used by expression-weighted pooling.
+#     use_hvg : bool, default True
+#         Whether to use HVG selection in tokenization/training steps.
+#     use_batch : bool, default True
+#         Whether to enable batch-related options in annotation.
+#     use_spatial : bool, default True
+#         Whether to enable spatial-related options in annotation.
+#     weight_mode : str, default "expression"
+#         Pooling mode for embedding aggregation.
+#     force_tokenize : bool, default True
+#         Whether to force regeneration of intermediate tokenization outputs (project-specific).
+#
+#     do_fit : bool, default True
+#         Whether to fit/fine-tune the annotation model.
+#     fit_epochs : int, default 500
+#         Number of epochs for fitting when ``do_fit=True``.
+#     shuffle_each_epoch : bool, default True
+#         Whether to shuffle samples each epoch during encoder training.
+#     slice_sample : bool, optional
+#         If True, select one slice for training (project-specific behavior).
+#     enc_mod : str, default "flowformer"
+#         Encoder module variant.
+#
+#     save_model : bool, default True
+#         Whether to save the fitted model checkpoint.
+#     save_model_path : str, optional
+#         Path to save the model checkpoint. If None, a default path is used.
+#
+#     do_train_encoder : bool, default True
+#         If True, train an encoder using ``encoder_adata_list`` before label transfer.
+#     num_global_epochs : int, default 100
+#         Number of global epochs for multi-dataset encoder training.
+#     per_dataset_epochs : int, default 50
+#         Number of epochs per dataset in multi-dataset encoder training.
+#
+#     label_key : str, default "cell_label"
+#         Key in ``adata.obs`` used as the supervision label.
+#     device : torch.device or str, optional
+#         Device to run on. If None, uses CUDA if available, else CPU.
+#
+#     Returns
+#     -------
+#     target_adata : anndata.AnnData or dict
+#         Predicted target AnnData (or a dict of targets) returned by the internal annotation routine.
+#     """
+#
+#     os.makedirs(output_dir, exist_ok=True)
+#     set_seed(42)
+#     if device is None:
+#         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#
+#     if config_train is None:
+#         raise ValueError("`config_train` must be provided.")
+#     config_train.update({
+#         "weight_mode": weight_mode,
+#         "cd_weight": cd_weight,
+#         "masking_p": 0,
+#         "batch_size": 64,
+#         "expr_mode": None,
+#         "use_gene_id_emb": True,
+#         "use_homo_emb": True,
+#         "use_rna_type_emb": True,
+#         "use_esm_emb": True,
+#     })
+#     if config_update:
+#         config_train.update(config_update)
+#
+#     # ====== Step 1: Train encoder (if enabled) ======
+#     if do_train_encoder:
+#         encoder_ckpt_path = train_encoder_on_multi_adata(
+#             dataset_info_list=encoder_adata_list,
+#             bb_ckpt_path=bb_ckpt_path,
+#             initial_ckpt_path=cellplm_ckpt_path,
+#             output_dir=output_dir,
+#             config_train=config_train,
+#             num_global_epochs=num_global_epochs,
+#             per_dataset_epochs=per_dataset_epochs,
+#             shuffle_each_epoch=shuffle_each_epoch,
+#             slice_sample=slice_sample,
+#             cd_weight=cd_weight,
+#             n_hvg=n_hvg,
+#             enc_mod=enc_mod,
+#             device=device
+#         )
+#     else:
+#         encoder_ckpt_path = cellplm_ckpt_path  # Use existing encoder
+#
+#     print(f"Using encoder checkpoint: {encoder_ckpt_path}")
+#
+#     # ====== Step 2: Run annotation and prediction ======
+#     target_adata = run_bbcellformer_annotation(
+#         source_adata_list=source_adata_list,
+#         target_adata_list=target_adata_list,
+#         output_dir=output_dir,
+#         output_prefix=output_prefix,
+#         bb_pretrain_path=bb_ckpt_path,
+#         cellformer_pretrain_path=encoder_ckpt_path,
+#         label_key=label_key,
+#         device=device,
+#         use_batch=use_batch,
+#         use_spatial=use_spatial,
+#         do_fit=do_fit,
+#         fit_epochs=fit_epochs,
+#         slice_sample=slice_sample,
+#         enc_mod=enc_mod,
+#         save_model_path=save_model_path,
+#     )
+#
+#     return target_adata
 
 def dev_sum(df: pd.DataFrame):
     """

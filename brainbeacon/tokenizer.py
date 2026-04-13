@@ -196,8 +196,8 @@ def normalize_gene_dict_var(gene_dict):
     for source, target in rename_candidates.items():
         if target not in gene_dict.var.columns and source in gene_dict.var.columns:
             gene_dict.var[target] = gene_dict.var[source]
-    required_columns = {"gene_id", "homo_connect_id", "gene_type_id"}
-    # required_columns = {"gene_id", "homo_connect_id_old", "gene_type_id"}
+    # required_columns = {"gene_id", "homo_connect_id", "gene_type_id"}
+    required_columns = {"gene_id", "homo_connect_id_old", "gene_type_id"}
     missing = required_columns.difference(gene_dict.var.columns)
     if missing:
         missing_list = ", ".join(sorted(missing))
@@ -984,7 +984,7 @@ def standardize_adata_obs(
         adata.obs["density_token"] = adata.obs["density_token"].map(density_map).astype(int)
         keys_to_keep.append("density_token")
         time1 = time.time()
-        print("compute_density_token time: ", (time1 - time0) / 60, "min")
+        print(f"compute_density_token time: {(time1 - time0):.4f} seconds")
 
     columns_to_delete = [col for col in adata.obs.columns if col not in keys_to_keep]
     adata.obs = adata.obs.drop(columns=columns_to_delete)
@@ -1323,6 +1323,7 @@ def tokenize_adata_in_memory(
     gene_type_col = _gene_type_column(adata_output.var)
 
     gene_connect_comp = adata_output.var["homo_connect_id"].values
+    # gene_connect_comp = adata_output.var["homo_connect_id_old"].values
     gene_id = adata_output.var["gene_id"].values
     gene_type_id = adata_output.var[gene_type_col].values
     deviation_bin_all = adata_output.obsm["deviation_bin"]
@@ -1452,8 +1453,8 @@ def _prepend_prefix_tokens(obs_df, x, x_connect_comp, x_rna_type, x_neighbor_gen
         x_neighbor_gene_distribution = np.concatenate((zero_int, x_neighbor_gene_distribution), axis=1)
         x_exp = np.concatenate((zero_float, x_exp), axis=1)
 
-    if config_train["specie"] and "specie" in obs_df.columns:
-        specie = obs_df["specie"].to_numpy(dtype=np.int32).reshape(-1, 1)
+    if config_train["species"] and "species" in obs_df.columns:
+        specie = obs_df["species"].to_numpy(dtype=np.int32).reshape(-1, 1)
         zero_int = np.zeros((x.shape[0], 1), dtype=np.int32)
         zero_float = np.zeros((x.shape[0], 1), dtype=np.float32)
         x = np.concatenate((specie, x), axis=1)

@@ -16,6 +16,7 @@ from typing import Union, List
 from brainbeacon.brain_beacon import BrainBeacon
 from brainbeacon.tokenizer import set_seed
 from brainbeacon.tokenizer import tokenize_adata_in_memory
+from brainbeacon.configs.config import resolve_path
 from brainbeacon.configs.stage1_config import stage1_config as default_config1
 from brainbeacon.configs.stage2_config import stage2_config as default_config2
 from brainbeacon.bbcellformer.pipeline.reconstruction import ReconstructPipeline
@@ -169,16 +170,16 @@ class BrainBeaconCellCluster(nn.Module):
             n_connect_comp=self.model_config["n_connect_comp"],
             n_aux=self.model_config["n_aux"],
             n_rna_type=self.model_config['n_rna_type'],
-            n_neighbor=self.model_config['num_neighbors'],
-            esm_embedding_dim=self.model_config['ems_embedding_dim'],
-            total_context_length=self.model_config['context_length'] * self.model_config['num_neighbors'],
-            neighbor_enhance=self.model_config["neighbor_enhance"],
+            # n_neighbor=self.model_config['num_neighbors'],
+            esm_embedding_dim=self.model_config['esm_emb_dim'],
+            # total_context_length=self.model_config['context_length'] * self.model_config['num_neighbors'],
             use_gene_id_emb=self.model_config["use_gene_id_emb"],
             use_homo_emb=self.model_config["use_homo_emb"],
             use_rna_type_emb=self.model_config["use_rna_type_emb"],
             use_esm_emb=self.model_config["use_esm_emb"],
             use_pos_emb=self.model_config["use_pos_emb"],
-            use_density_emb=self.model_config["use_density_emb"],
+            neighbor_enhance=self.model_config["use_gene_deviation"],
+            use_density_emb=self.model_config["use_cell_density"],
             density_token_idx=self.model_config["density_token_idx"],
         )
 
@@ -727,7 +728,7 @@ def run_bb_inference_fast(
     )
 
     # ====== 2. Build dataset and dataloader ======
-    dataset = InMemoryTokenDataset(token_dict, max_len=1000)
+    dataset = InMemoryTokenDataset(token_dict, max_len=config_train['context_length'])
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -738,6 +739,8 @@ def run_bb_inference_fast(
 
     # ====== 3. Model inference ======
     print(f"[Stage1 memory] Running inference (batch_size={batch_size})...")
+    esm_emb_path = resolve_path('ESM_EMBED_PATH')
+    config_train["esm_emb_path"] = esm_emb_path
     pipeline = CellEmbeddingPipeline(
         pretrain_ckpt=pretrain_ckpt,
         model_config=config_train,
@@ -746,11 +749,13 @@ def run_bb_inference_fast(
     pipeline.model.eval()
 
     # esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu")
-    esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu").to(device)
+    esm_embedding_map = torch.load(esm_emb_path, map_location="cpu").to(device)
 
     pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
     weight_mode = config_train.get("weight_mode", "expression")
     cd_weight = config_train.get("cd_weight", 0.02)
+    if not config_train.get("use_cell_density", True):
+        cd_weight = 0.0
     expr_mode = config_train.get("expr_mode", None)
 
     all_indices = []
@@ -1052,7 +1057,7 @@ def run_stage1_pipeline(
             "Currently supported modes are {'disk', 'memory'}."
         )
 
-    config_train = normalize_brainbeacon_model_config(config_train)
+    # config_train = normalize_brainbeacon_model_config(config_train)
 
     force_tokenize = config_train.get("force_tokenize", True)
     use_hvg = config_train.get("use_hvg", True)
@@ -1167,7 +1172,7 @@ def run_stage2_pipeline(
         do_fit=True,
         fit_epochs=500,
         use_single_slice=False,
-        use_spatial=True,
+        use_coord=True,
         save_model_path=None,
         save_embedding_path=None,
         device=None,
@@ -1191,7 +1196,7 @@ def run_stage2_pipeline(
     # Use slice as batch/group identifier for Stage2
     data.obs['batch'] = data.obs['slice']
 
-    if use_spatial and "spatial" in data.obsm.keys():
+    if use_coord and "spatial" in data.obsm.keys():
         for batch_id in data.obs['batch'].unique():
             idx = data.obs['batch'] == batch_id
             spatial = data.obsm['spatial'][idx]
@@ -1515,3 +1520,198 @@ def run_brainbeacon_pipeline(
     )
 
     return adata
+
+def train_stage2_on_multi_adata(
+    dataset_info_list: list[dict],
+    gene_dict_path: str,
+    stage1_ckpt_path: str,
+    stage2_ckpt_path: str | None = None,
+    output_dir: str | None = None,
+    output_prefix: str = "brainbeacon",
+    stage1_config: dict | None = None,
+    stage2_config: dict | None = None,
+    num_global_epochs: int = 100,
+    per_dataset_epochs: int = 50,
+    shuffle_each_epoch: bool = True,
+    use_single_slice: bool = False,
+    stage1_mode: str = "memory",
+    device=None,
+    seed: int = 42,
+    deterministic: bool = True,
+    save_model: bool = True,
+    save_all_epochs: bool = False,
+) -> str | None:
+    """
+    Sequentially train / finetune Stage2 across multiple AnnData datasets.
+
+    This function supports two input styles for each dataset item in
+    `dataset_info_list`:
+
+    Style 1 (legacy path-based):
+    {
+        "data_name": str,
+        "data_dir": str,
+        "adata_name": str,
+        "species": str,
+        "assay": str,
+    }
+
+    Style 2 (in-memory adata-based):
+    {
+        "data_name": str,
+        "adata": AnnData,
+        "species": str,
+        "assay": str,
+    }
+
+    Parameters
+    ----------
+    dataset_info_list : list[dict]
+        A list of dataset descriptions. Each item must provide either:
+        - (`data_dir` and `adata_name`), or
+        - `adata`
+    gene_dict_path : str
+        Path to gene dictionary.
+    stage1_ckpt_path : str
+        Path to pretrained Stage1 checkpoint.
+    stage2_ckpt_path : str or None, optional
+        Initial Stage2 checkpoint path. If None, Stage2 starts without a pretrained ckpt.
+    output_dir : str
+        Root output directory.
+    output_prefix : str, default="brainbeacon"
+        Prefix for saved outputs.
+    stage1_config : dict or None
+        Override config for Stage1.
+    stage2_config : dict or None
+        Override config for Stage2.
+    num_global_epochs : int, default=100
+        Number of outer epochs over all datasets.
+    per_dataset_epochs : int, default=50
+        Stage2 fit epochs for each dataset in each outer epoch.
+    shuffle_each_epoch : bool, default=True
+        Whether to shuffle dataset order every outer epoch.
+    use_single_slice : bool, default=False
+        Whether to use a single slice in Stage2 fitting.
+    stage1_mode : str, default="memory"
+        One of {"disk", "memory"}.
+    device : torch.device or str or None
+        Compute device.
+    seed : int, default=42
+        Random seed.
+    deterministic : bool, default=True
+        Whether to enforce deterministic behavior.
+    save_model : bool, default=True
+        Whether to save updated Stage2 checkpoints.
+    save_all_epochs : bool, default=False
+        Whether to save one checkpoint per epoch per dataset.
+
+    Returns
+    -------
+    final_stage2_ckpt_path : str or None
+        Final Stage2 checkpoint path after sequential training.
+    """
+    if dataset_info_list is None or len(dataset_info_list) == 0:
+        raise ValueError("`dataset_info_list` must be a non-empty list.")
+    if gene_dict_path is None:
+        raise ValueError("`gene_dict_path` must be provided.")
+    if stage1_ckpt_path is None:
+        raise ValueError("`stage1_ckpt_path` must be provided.")
+    if output_dir is None:
+        raise ValueError("`output_dir` must be provided.")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    current_stage2_ckpt_path = stage2_ckpt_path
+
+    ckpt_dir = os.path.join(output_dir, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    for global_epoch in range(num_global_epochs):
+        print(f"\n========== Global Epoch {global_epoch + 1}/{num_global_epochs} ==========")
+
+        datasets_this_epoch = list(dataset_info_list)
+        if shuffle_each_epoch:
+            rng = np.random.RandomState(seed + global_epoch if seed is not None else None)
+            rng.shuffle(datasets_this_epoch)
+
+        for ds_idx, ds in enumerate(datasets_this_epoch):
+            if "data_name" not in ds:
+                raise ValueError("Each dataset dict must contain `data_name`.")
+            if "species" not in ds:
+                raise ValueError(f"Dataset `{ds.get('data_name', 'unknown')}` missing `species`.")
+            if "assay" not in ds:
+                raise ValueError(f"Dataset `{ds.get('data_name', 'unknown')}` missing `assay`.")
+
+            data_name = ds["data_name"]
+            species = ds["species"]
+            assay = ds["assay"]
+
+            print(f"\n--- Training on {data_name} ({ds_idx + 1}/{len(datasets_this_epoch)}) ---")
+
+            # Support both:
+            # 1) in-memory AnnData: ds["adata"]
+            # 2) path-based input: ds["data_dir"] + ds["adata_name"]
+            adata = ds.get("adata", None)
+            data_dir = ds.get("data_dir", None)
+            adata_name = ds.get("adata_name", None)
+
+            if adata is not None:
+                adata_path = None
+                print(f"[Input mode] Using in-memory adata for {data_name}")
+            else:
+                if data_dir is None or adata_name is None:
+                    raise ValueError(
+                        f"Dataset `{data_name}` must provide either `adata` "
+                        f"or both `data_dir` and `adata_name`."
+                    )
+                adata_path = os.path.join(data_dir, adata_name)
+                print(f"[Input mode] Using adata_path: {adata_path}")
+
+            dataset_output_dir = os.path.join(output_dir, data_name)
+            os.makedirs(dataset_output_dir, exist_ok=True)
+
+            if save_model:
+                if save_all_epochs:
+                    current_save_model_path = os.path.join(
+                        ckpt_dir,
+                        f"{output_prefix}_epoch{global_epoch + 1:02d}_{data_name}.pt"
+                    )
+                else:
+                    current_save_model_path = os.path.join(
+                        ckpt_dir,
+                        f"{output_prefix}_latest.pt"
+                    )
+            else:
+                current_save_model_path = None
+
+            run_brainbeacon_pipeline(
+                adata=adata,
+                adata_path=adata_path,
+                species=species,
+                assay=assay,
+                gene_dict_path=gene_dict_path,
+                stage1_ckpt_path=stage1_ckpt_path,
+                stage2_ckpt_path=current_stage2_ckpt_path,
+                output_dir=dataset_output_dir,
+                output_prefix=f"{output_prefix}_{data_name}",
+                stage1_config=stage1_config,
+                stage2_config=stage2_config,
+                do_fit=True,
+                fit_epochs=per_dataset_epochs,
+                use_single_slice=use_single_slice,
+                stage1_mode=stage1_mode,
+                device=device,
+                seed=seed,
+                deterministic=deterministic,
+                save_model=save_model,
+                save_model_path=current_save_model_path,
+            )
+
+            if save_model:
+                current_stage2_ckpt_path = current_save_model_path
+                print(f"[Stage2 updated] Current checkpoint: {current_stage2_ckpt_path}")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    return current_stage2_ckpt_path
