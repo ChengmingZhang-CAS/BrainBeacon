@@ -1232,15 +1232,15 @@ def run_stage2_pipeline(
             chosen_slice = rng.choice(data.obs['slice'].unique())
             fit_data = data[data.obs['slice'] == chosen_slice].copy()
             print(f"Training only on slice: {chosen_slice} ({fit_data.n_obs} cells)")
-            MAX_CELLS = 50000
-            if fit_data.n_obs > MAX_CELLS:
-                print(f"[Warning] Too many cells in slice ({fit_data.n_obs}), subsampling to {MAX_CELLS}")
-                sampled_indices = np.random.choice(fit_data.n_obs, MAX_CELLS, replace=False)
-                fit_data = fit_data[sampled_indices].copy()
-                print("fit data shape:", fit_data.shape)
-
         else:
             fit_data = data.copy()
+
+        MAX_CELLS = 50000
+        if fit_data.n_obs > MAX_CELLS:
+            print(f"[Warning] Too many cells in slice ({fit_data.n_obs}), subsampling to {MAX_CELLS}")
+            sampled_indices = np.random.choice(fit_data.n_obs, MAX_CELLS, replace=False)
+            fit_data = fit_data[sampled_indices].copy()
+            print("fit data shape:", fit_data.shape)
 
         covariate_fields = config.get("covariate_fields", None)
         if covariate_fields is not None:
@@ -1706,6 +1706,10 @@ def train_stage2_on_multi_adata(
                 save_model=save_model,
                 save_model_path=current_save_model_path,
             )
+            import gc
+            del adata
+            torch.cuda.empty_cache()
+            gc.collect()
 
             if save_model:
                 current_stage2_ckpt_path = current_save_model_path
