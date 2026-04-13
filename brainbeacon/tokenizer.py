@@ -1018,6 +1018,7 @@ def tokenization_h5ad(adata, gene_dict_path, species=None, assay=None, output_pa
         gene_niche = False
         spatial_imputation = False
     if normalized_assay == "stereo" and spatial_imputation:
+        print("performing spatial imputation...")
         adata = spatial_expression_imputation(
             adata,
             spatial_key='spatial',
@@ -1191,6 +1192,8 @@ def tokenize_adata_in_memory(
     min_cells: int = 3,
     cell_density: bool = True,
     gene_niche: bool = True,
+    spatial_imputation: bool = False,
+
 ) -> dict:
     """
     Tokenize an AnnData object entirely in memory (no disk I/O).
@@ -1219,6 +1222,8 @@ def tokenize_adata_in_memory(
         Whether to compute density token.
     gene_niche : bool, default=True
         Whether to compute deviation / niche token.
+    spatial_imputation : bool, default=False
+        Whether to perform spatial expression imputation (only for spatial data).
 
     Returns
     -------
@@ -1243,7 +1248,7 @@ def tokenize_adata_in_memory(
         cell_density = False
         gene_niche = False
 
-    if normalized_assay == "stereo":
+    if normalized_assay == "stereo" and spatial_imputation:
         adata = spatial_expression_imputation(
             adata,
             spatial_key="spatial",
