@@ -36,14 +36,26 @@ def normalize_brainbeacon_model_config(model_config: dict) -> dict:
     if "gene_id" not in normalized and "use_gene_id_emb" in normalized:
         normalized["gene_id"] = bool(normalized["use_gene_id_emb"])
 
-    normalized.setdefault("neighbor_enhance", True)
+    if "use_cell_density" not in normalized and "use_density_emb" in normalized:
+        normalized["use_cell_density"] = bool(normalized["use_density_emb"])
+    if "use_density_emb" not in normalized and "use_cell_density" in normalized:
+        normalized["use_density_emb"] = bool(normalized["use_cell_density"])
+
+    if "use_gene_deviation" not in normalized and "neighbor_enhance" in normalized:
+        normalized["use_gene_deviation"] = bool(normalized["neighbor_enhance"])
+    if "neighbor_enhance" not in normalized and "use_gene_deviation" in normalized:
+        normalized["neighbor_enhance"] = bool(normalized["use_gene_deviation"])
+
     normalized.setdefault("use_gene_id_emb", True)
     normalized.setdefault("use_homo_emb", True)
     normalized.setdefault("use_rna_type_emb", True)
     normalized.setdefault("use_esm_emb", True)
     normalized.setdefault("use_esm_embedding", bool(normalized["use_esm_emb"]))
     normalized.setdefault("use_pos_emb", True)
-    normalized.setdefault("use_density_emb", True)
+    normalized.setdefault("use_cell_density", True)
+    normalized.setdefault("use_density_emb", bool(normalized["use_cell_density"]))
+    normalized.setdefault("use_gene_deviation", True)
+    normalized.setdefault("neighbor_enhance", bool(normalized["use_gene_deviation"]))
     normalized.setdefault("density_token_idx", 2)
 
     return normalized
@@ -712,6 +724,8 @@ def run_bb_inference_fast(
     # ====== 1. In-memory tokenization ======
     print("[Stage1 memory] Tokenizing in memory...")
     t_tok = time.time()
+    use_cell_density = config_train.get("use_cell_density", True)
+    use_gene_deviation = config_train.get("use_gene_deviation", True)
     token_dict = tokenize_adata_in_memory(
         adata,
         gene_dict_path,
@@ -720,6 +734,8 @@ def run_bb_inference_fast(
         use_hvg=use_hvg,
         n_hvg=n_hvg,
         use_dev_abs=use_dev_abs,
+        cell_density=use_cell_density,
+        gene_niche=use_gene_deviation,
     )
     print(
         f"[Stage1 memory] Tokenization done: "
@@ -1222,6 +1238,7 @@ def run_stage2_pipeline(
         "starmap": 2,
         "slideseqv2": 3,
         "stereo": 4,
+        "snrna": 5,
     }
 
     if do_fit:

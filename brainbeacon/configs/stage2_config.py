@@ -50,8 +50,8 @@ stage2_config = {
   "use_pretrain": True,
   "covariate_fields": ["slice_cov", "dataset_cov", "platform_cov"],
   # "covariate_fields": None,
-  "slice_num": 2000,
-  "dataset_num": 200,
-  "platform_num": 5,
+  "slice_num": 3000,
+  "dataset_num": 300,
+  "platform_num": 10,
   "gene_list": [None]
 }
