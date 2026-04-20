@@ -168,18 +168,30 @@ def main(rank, args, config_train):
     file_labels_list = []
     for path in train_path:
         # Parse (platform_id, species_id) from directory name
-        dirname = os.path.basename(path).lower()
+        path_lower = path.lower()
         platform_id = 11  # default to stereo
         for tech_name, tech_id in technology_dict.items():
-            if tech_name.lower() in dirname:
+            if tech_name.lower() in path_lower:
                 platform_id = tech_id
                 break
+        # Extended species matching to handle typos in directory names (macaqe1, macque2)
+        species_alias = {**{k: v for k, v in specie_dict.items()}, 'macaqe': 5, 'macque': 5}
         species_id = 4  # default to mouse
-        for spec_name, spec_id in specie_dict.items():
-            if spec_name in dirname:
+        for spec_name, spec_id in species_alias.items():
+            if spec_name in path_lower:
                 species_id = spec_id
                 break
         path_label = (platform_id, species_id)
+
+        # Skip excluded species/platform
+        if args.exclude_species and species_id in args.exclude_species:
+            if rank == 0 and logger:
+                logger.info(f"Excluding path (species {species_id}): {path}")
+            continue
+        if args.exclude_platform and platform_id in args.exclude_platform:
+            if rank == 0 and logger:
+                logger.info(f"Excluding path (platform {platform_id}): {path}")
+            continue
 
         for sample in os.listdir(path):
             sample_dir = os.path.join(path, sample)
@@ -251,10 +263,11 @@ def main(rank, args, config_train):
 
     desired_per_gpu_batch_count = len(train_dataset) // args.world_size
 
+    effective_weights = None if args.no_weight_sampling else label_weights
     train_sampler = HierarchicalDistributedSampler(
         dataset=train_dataset,
         label_fn=lambda i: train_dataset.get_label(i),
-        label_weights=label_weights,
+        label_weights=effective_weights,
         num_samples=desired_per_gpu_batch_count,
         num_replicas=args.world_size,
         rank=rank,
@@ -271,8 +284,7 @@ def main(rank, args, config_train):
         train_dataset,
         batch_size=config_train["batch_size"],
         sampler=train_sampler,
-        num_workers=2,
-        prefetch_factor=4
+        num_workers=0
     )
     esm_embedding_map = torch.load(config_train["esm_embedding_path"], weights_only=False).to(device)
 
@@ -329,13 +341,19 @@ if __name__ == '__main__':
     parser.add_argument('--density_token_idx', type=int, default=2, help='Density token position index')
     parser.add_argument('--max_total_samples', type=int, default=None, help='Maximum total training samples for data ablation')
     parser.add_argument('--max_steps', type=int, default=None, help='Maximum total training steps (None means no limit)')
+    parser.add_argument('--no_weight_sampling', type=int, default=0, help='Disable weighted sampling (0=use weights, 1=uniform)')
     parser.add_argument('--accumulation_steps', type=int, default=4, help='Gradient accumulation steps (default=4 for continue training)')
+    parser.add_argument('--exclude_species', type=int, nargs='*', default=None, help='Species IDs to exclude (3=human,4=mouse,5=macaque,6=marmoset)')
+    parser.add_argument('--exclude_platform', type=int, nargs='*', default=None, help='Platform IDs to exclude (7=MERFISH,8=Xenium,9=STARmap,10=SlideSeqV2,11=Stereo,12=snRNA)')
+    parser.add_argument('--lr', type=float, default=None, help='Override learning rate from config')
     parser.add_argument('--exp_name', type=str, default=None, help='Experiment name prefix for logdir (e.g. ABL1)')
     parser.add_argument('--config', type=str, default=None, help='Path to YAML config file (overrides config_train.py)')
     args = parser.parse_args()
     print('Args: {}'.format(args))
 
     config_train = load_config(args.config)
+    if args.lr is not None:
+        config_train['lr'] = args.lr
     print('Config: {}'.format(config_train))
 
     # set_seed(2025)

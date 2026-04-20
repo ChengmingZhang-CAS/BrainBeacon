@@ -33,7 +33,10 @@ class HierarchicalDistributedSampler(Sampler):
 
         # label list & 权重张量
         self.labels = list(self.label_to_indices.keys())
-        raw_weights = torch.tensor([label_weights.get(lbl, 1.0) for lbl in self.labels], dtype=torch.float)
+        if label_weights is not None:
+            raw_weights = torch.tensor([label_weights.get(lbl, 1.0) for lbl in self.labels], dtype=torch.float)
+        else:
+            raw_weights = torch.ones(len(self.labels), dtype=torch.float)
         self.label_probs = raw_weights / raw_weights.sum()
 
     def set_epoch(self, epoch):
