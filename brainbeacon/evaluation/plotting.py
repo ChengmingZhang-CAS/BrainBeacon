@@ -340,21 +340,6 @@ def plot_metric_comparison(
 ):
     """
     Plot one metric comparison across groups.
-
-    Parameters
-    ----------
-    results_df : pd.DataFrame
-        Benchmark results.
-    metric : str
-        Metric column name.
-    x : str
-        Group column on x-axis.
-    kind : str
-        'bar' or 'box'.
-    error_col : str or None
-        Error column for bar plot, such as 'ari_std'.
-    use_errorbar : bool
-        Whether to draw error bars when available.
     """
     if x not in results_df.columns:
         raise KeyError(f"{x} not found in results_df.columns.")
@@ -468,10 +453,6 @@ def plot_all_metric_comparisons(
 ):
     """
     Plot each metric as a separate figure, optionally split by one column.
-
-    Typical usage:
-    - summary_df + summary metrics -> bar plots with error bars
-    - raw all_results_df + raw metrics -> box plots
     """
     figures = []
 
@@ -551,8 +532,6 @@ def plot_metric_subplots(
 ):
     """
     Plot multiple metrics in one subplot figure.
-
-    If split_by is provided, generate one subplot figure per group.
     """
     metrics = [m for m in metrics if m in results_df.columns]
     if len(metrics) == 0:
@@ -665,14 +644,12 @@ def get_default_metric_list(results_df: Optional[pd.DataFrame] = None) -> List[s
     metric_list = [
         "ari",
         "nmi",
-        "ami",
-        "homogeneity",
-        "completeness",
-        "v_measure",
-        "purity",
-        "silhouette",
+        "asw",
         "neighbor_agreement",
         "label_entropy",
+        "moran_i",
+        "local_moran_i",
+        "geary_c",
     ]
 
     if results_df is None:
@@ -688,14 +665,12 @@ def get_summary_metric_list(results_df: Optional[pd.DataFrame] = None) -> List[s
     metric_list = [
         "ari_mean",
         "nmi_mean",
-        "ami_mean",
-        "homogeneity_mean",
-        "completeness_mean",
-        "v_measure_mean",
-        "purity_mean",
-        "silhouette_mean",
+        "asw_mean",
         "neighbor_agreement_mean",
         "label_entropy_mean",
+        "moran_i_mean",
+        "local_moran_i_mean",
+        "geary_c_mean",
     ]
 
     if results_df is None:

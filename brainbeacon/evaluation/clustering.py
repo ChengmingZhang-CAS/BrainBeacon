@@ -11,6 +11,8 @@ from .metrics import (
     compute_clustering_metrics,
     compute_embedding_metrics,
     compute_spatial_metrics,
+    compute_spatial_autocorr_metrics,
+    precompute_spatial_graph,
 )
 from .plotting import save_method_plots
 
@@ -104,6 +106,7 @@ def attach_embeddings_to_adata(
     final_keys = {}
 
     for method_name, npz_path in method_npz_paths.items():
+        print(f"Attaching embedding for method '{method_name}' from {npz_path}...")
         emb_key = method_embedding_keys.get(method_name, f"X_{method_name}")
         X_emb = load_embedding_from_npz(npz_path, array_key=array_key)
 
@@ -174,65 +177,110 @@ def get_embedding(
 
 
 # =============================================================================
-# Leiden clustering
+# Graph preparation
 # =============================================================================
 
-def _run_leiden_once(
+def _prepare_leiden_graph(
     X: np.ndarray,
-    resolution: float,
     n_neighbors: int = 15,
     metric: str = "euclidean",
     random_state: int = 0,
     pca_dim: Optional[int] = None,
-) -> np.ndarray:
-    """Run Leiden once on one embedding matrix."""
+) -> Tuple[AnnData, np.ndarray]:
+    """
+    Prepare one Scanpy neighbors graph that can be reused for multiple Leiden runs.
+    """
     X = _to_numpy_2d(X, "X")
     X_use = reduce_dimensions(X, n_components=pca_dim, random_state=random_state)
 
-    adata_tmp = AnnData(X=np.zeros((X_use.shape[0], 1), dtype=np.float32))
-    adata_tmp.obsm["X_emb"] = X_use
+    adata_graph = AnnData(X=np.zeros((X_use.shape[0], 1), dtype=np.float32))
+    adata_graph.obsm["X_emb"] = X_use
 
     sc.pp.neighbors(
-        adata_tmp,
+        adata_graph,
         use_rep="X_emb",
         n_neighbors=n_neighbors,
         metric=metric,
     )
+    return adata_graph, X_use
+
+
+def _prepare_umap_from_graph(
+    adata_graph: AnnData,
+    random_state: int = 0,
+) -> np.ndarray:
+    """
+    Compute UMAP once from a prebuilt neighbors graph.
+    """
+    adata_umap = adata_graph.copy()
+    sc.tl.umap(adata_umap, random_state=random_state)
+    return _to_numpy_2d(adata_umap.obsm["X_umap"], "X_umap")
+
+
+# =============================================================================
+# Leiden clustering
+# =============================================================================
+
+def _run_leiden_once(
+    X: Optional[np.ndarray] = None,
+    resolution: float = 1.0,
+    n_neighbors: int = 15,
+    metric: str = "euclidean",
+    random_state: int = 0,
+    pca_dim: Optional[int] = None,
+    adata_graph: Optional[AnnData] = None,
+) -> np.ndarray:
+    """Run Leiden once on one embedding matrix or a prebuilt graph."""
+    if adata_graph is None:
+        if X is None:
+            raise ValueError("Either X or adata_graph must be provided.")
+        adata_graph, _ = _prepare_leiden_graph(
+            X=X,
+            n_neighbors=n_neighbors,
+            metric=metric,
+            random_state=random_state,
+            pca_dim=pca_dim,
+        )
+
+    adata_tmp = adata_graph.copy()
     sc.tl.leiden(
         adata_tmp,
         resolution=resolution,
         random_state=random_state,
+        key_added="leiden",
     )
     return adata_tmp.obs["leiden"].to_numpy().astype(str)
 
 
 def _search_leiden_resolution(
-    X: np.ndarray,
-    target_n_clusters: int,
+    X: Optional[np.ndarray] = None,
+    target_n_clusters: int = 1,
     n_neighbors: int = 15,
     metric: str = "euclidean",
     random_state: int = 0,
     pca_dim: Optional[int] = None,
     max_iterations: int = 10,
     tolerance_ratio: float = 0.1,
+    adata_graph: Optional[AnnData] = None,
 ):
     """Search Leiden resolution to match target cluster number."""
-    if target_n_clusters < 1:
-        raise ValueError("target_n_clusters must be >= 1.")
+    if target_n_clusters <= 1:
+        raise ValueError("target_n_clusters must be > 1.")
     if tolerance_ratio < 0:
         raise ValueError("tolerance_ratio must be >= 0.")
 
-    X = _to_numpy_2d(X, "X")
-    X_use = reduce_dimensions(X, n_components=pca_dim, random_state=random_state)
+    if adata_graph is None:
+        if X is None:
+            raise ValueError("Either X or adata_graph must be provided.")
+        adata_graph, _ = _prepare_leiden_graph(
+            X=X,
+            n_neighbors=n_neighbors,
+            metric=metric,
+            random_state=random_state,
+            pca_dim=pca_dim,
+        )
 
-    adata_tmp = AnnData(X=np.zeros((X_use.shape[0], 1), dtype=np.float32))
-    adata_tmp.obsm["X_emb"] = X_use
-    sc.pp.neighbors(
-        adata_tmp,
-        use_rep="X_emb",
-        n_neighbors=n_neighbors,
-        metric=metric,
-    )
+    adata_tmp = adata_graph.copy()
 
     tolerance = max(1, int(np.ceil(target_n_clusters * tolerance_ratio)))
     init_resolution = max(0.1, target_n_clusters / 10.0)
@@ -256,7 +304,7 @@ def _search_leiden_resolution(
         "diff": int(best_diff),
     }]
 
-    if best_diff <= tolerance:
+    if best_diff <= tolerance and pred_n_clusters >= 2:
         return best_resolution, best_pred, history
 
     if pred_n_clusters < target_n_clusters:
@@ -283,12 +331,12 @@ def _search_leiden_resolution(
             "diff": int(diff_mid),
         })
 
-        if diff_mid < best_diff:
+        if n_mid >= 2 and (diff_mid < best_diff or len(np.unique(best_pred)) < 2):
             best_diff = diff_mid
             best_resolution = mid
             best_pred = y_mid
 
-        if diff_mid <= tolerance:
+        if diff_mid <= tolerance and n_mid >= 2:
             break
 
         if n_mid < target_n_clusters:
@@ -300,7 +348,7 @@ def _search_leiden_resolution(
 
 
 def cluster_leiden(
-    X: np.ndarray,
+    X: Optional[np.ndarray] = None,
     target_n_clusters: Optional[int] = None,
     resolution: float = 1.0,
     n_neighbors: int = 15,
@@ -309,9 +357,14 @@ def cluster_leiden(
     pca_dim: Optional[int] = None,
     max_iterations: int = 10,
     return_info: bool = False,
+    adata_graph: Optional[AnnData] = None,
 ):
-    """Run Leiden clustering on one embedding matrix."""
-    X = _to_numpy_2d(X, "X")
+    """Run Leiden clustering on one embedding matrix or a prebuilt graph."""
+    if X is None and adata_graph is None:
+        raise ValueError("Either X or adata_graph must be provided.")
+
+    if X is not None:
+        X = _to_numpy_2d(X, "X")
 
     if target_n_clusters is not None:
         final_resolution, y_pred, history = _search_leiden_resolution(
@@ -322,6 +375,7 @@ def cluster_leiden(
             random_state=random_state,
             pca_dim=pca_dim,
             max_iterations=max_iterations,
+            adata_graph=adata_graph,
         )
     else:
         y_pred = _run_leiden_once(
@@ -331,6 +385,7 @@ def cluster_leiden(
             metric=metric,
             random_state=random_state,
             pca_dim=pca_dim,
+            adata_graph=adata_graph,
         )
         final_resolution = resolution
         history = None
@@ -365,19 +420,17 @@ def _prepare_umap(
         raise KeyError(f"{embedding_key} not found in adata.obsm.")
 
     X_emb = _to_numpy_2d(adata.obsm[embedding_key], embedding_key)
-
-    adata_tmp = AnnData(X=np.zeros((X_emb.shape[0], 1), dtype=np.float32))
-    adata_tmp.obsm["X_emb"] = X_emb
-
-    sc.pp.neighbors(
-        adata_tmp,
-        use_rep="X_emb",
+    adata_graph, _ = _prepare_leiden_graph(
+        X=X_emb,
         n_neighbors=n_neighbors,
         metric=metric,
+        random_state=random_state,
+        pca_dim=None,
     )
-    sc.tl.umap(adata_tmp, random_state=random_state)
-
-    adata.obsm[umap_key] = _to_numpy_2d(adata_tmp.obsm["X_umap"], "X_umap")
+    adata.obsm[umap_key] = _prepare_umap_from_graph(
+        adata_graph=adata_graph,
+        random_state=random_state,
+    )
     return adata
 
 
@@ -443,8 +496,16 @@ def evaluate_clustering(
     if cluster_key is None:
         cluster_key = f"{method_name}_{label_key}_cluster"
 
-    y_pred, cluster_info = cluster_leiden(
+    adata_graph, _ = _prepare_leiden_graph(
         X=X_emb,
+        n_neighbors=n_neighbors,
+        metric=graph_metric,
+        random_state=random_state,
+        pca_dim=leiden_pca_dim,
+    )
+
+    y_pred, cluster_info = cluster_leiden(
+        X=None,
         target_n_clusters=target_n_clusters,
         resolution=resolution,
         n_neighbors=n_neighbors,
@@ -453,6 +514,7 @@ def evaluate_clustering(
         pca_dim=leiden_pca_dim,
         max_iterations=max_iterations,
         return_info=True,
+        adata_graph=adata_graph,
     )
     print(
         f"[Clustering] label={label_key} | "
@@ -460,7 +522,7 @@ def evaluate_clustering(
         f"target_n_clusters={int(target_n_clusters)} | "
         f"n_clusters_pred={int(cluster_info['n_clusters'])} | "
         f"resolution={float(cluster_info['resolution']):.2f} | "
-        f"n_search_steps={len(cluster_info['history'])}"
+        f"n_search_steps={len(cluster_info['history']) if cluster_info['history'] is not None else 0}"
     )
 
     adata_out.obs[cluster_key] = pd.Categorical(y_pred.astype(str))
@@ -468,12 +530,8 @@ def evaluate_clustering(
     if compute_umap:
         if umap_key is None:
             umap_key = f"X_umap_{method_name}_{label_key}"
-        _prepare_umap(
-            adata=adata_out,
-            embedding_key=final_embedding_key,
-            umap_key=umap_key,
-            n_neighbors=n_neighbors,
-            metric=graph_metric,
+        adata_out.obsm[umap_key] = _prepare_umap_from_graph(
+            adata_graph=adata_graph,
             random_state=random_state,
         )
 
@@ -496,14 +554,38 @@ def evaluate_clustering(
 
     if spatial_key is not None and spatial_key in adata_out.obsm:
         spatial = _to_numpy_2d(adata_out.obsm[spatial_key], spatial_key)
-        results.update(compute_spatial_metrics(y_pred=y_pred, spatial=spatial))
+        spatial_graph_cache = precompute_spatial_graph(
+            spatial=spatial,
+            n_neighbors=n_neighbors,
+        )
+
+        results.update(
+            compute_spatial_metrics(
+                y_pred=y_pred,
+                spatial=None,
+                n_neighbors=n_neighbors,
+                spatial_graph_cache=spatial_graph_cache,
+            )
+        )
+
+        results.update(
+            compute_spatial_autocorr_metrics(
+                spatial=None,
+                labels=y_pred,
+                n_neighbors=n_neighbors,
+                spatial_graph_cache=spatial_graph_cache,
+            )
+        )
     else:
         results["neighbor_agreement"] = np.nan
         results["label_entropy"] = np.nan
+        results["moran_i"] = np.nan
+        results["local_moran_i"] = np.nan
+        results["geary_c"] = np.nan
 
     if return_details:
         results["cluster_sizes"] = cluster_info["cluster_sizes"]
-        results["search_history"] = cluster_info["search_history"]
+        results["search_history"] = cluster_info["history"]
 
     if save_plots:
         if plot_dir is None:
@@ -525,6 +607,181 @@ def evaluate_clustering(
         )
 
     return adata_out, results
+
+
+def _evaluate_clustering_precomputed(
+    adata: AnnData,
+    method_name: str,
+    label_key: str,
+    X_emb: np.ndarray,
+    final_embedding_key: str,
+    adata_graph: AnnData,
+    spatial_key: Optional[str] = "spatial",
+    spatial_graph_cache=None,
+    cluster_key: Optional[str] = None,
+    target_n_clusters: Optional[int] = None,
+    resolution: float = 1.0,
+    n_neighbors: int = 15,
+    graph_metric: str = "euclidean",
+    random_state: int = 0,
+    max_iterations: int = 10,
+    return_details: bool = False,
+    compute_umap: bool = False,
+    umap_key: Optional[str] = None,
+    save_plots: bool = False,
+    plot_dir: Optional[str] = None,
+    plot_prefix: Optional[str] = None,
+    plot_ground_truth: bool = False,
+    spatial_point_size: float = 8,
+    umap_point_size: float = 8,
+):
+    """
+    Evaluate clustering using precomputed embedding and prebuilt graph.
+    This is used internally by the benchmark loop to avoid repeated graph construction.
+    """
+    method_name = str(method_name)
+    label_key = str(label_key)
+
+    if label_key not in adata.obs:
+        raise KeyError(f"{label_key} not found in adata.obs.")
+
+    if final_embedding_key not in adata.obsm:
+        adata.obsm[final_embedding_key] = X_emb
+
+    y_true = adata.obs[label_key].to_numpy()
+
+    if target_n_clusters is None:
+        target_n_clusters = int(pd.Series(y_true).nunique())
+
+    if cluster_key is None:
+        cluster_key = f"{method_name}_{label_key}_cluster"
+
+    y_pred, cluster_info = cluster_leiden(
+        X=None,
+        target_n_clusters=target_n_clusters,
+        resolution=resolution,
+        n_neighbors=n_neighbors,
+        metric=graph_metric,
+        random_state=random_state,
+        pca_dim=None,
+        max_iterations=max_iterations,
+        return_info=True,
+        adata_graph=adata_graph,
+    )
+
+    print(
+        f"[Clustering] label={label_key} | "
+        f"n_labels_true={int(pd.Series(y_true).nunique())} | "
+        f"target_n_clusters={int(target_n_clusters)} | "
+        f"n_clusters_pred={int(cluster_info['n_clusters'])} | "
+        f"resolution={float(cluster_info['resolution']):.2f} | "
+        f"n_search_steps={len(cluster_info['history']) if cluster_info['history'] is not None else 0}"
+    )
+
+    adata.obs[cluster_key] = pd.Categorical(y_pred.astype(str))
+
+    if compute_umap:
+        if umap_key is None:
+            umap_key = f"X_umap_{method_name}"
+        if umap_key not in adata.obsm:
+            adata.obsm[umap_key] = _prepare_umap_from_graph(
+                adata_graph=adata_graph,
+                random_state=random_state,
+            )
+
+    results = {
+        "method": method_name,
+        "embedding_key": final_embedding_key,
+        "label_key": label_key,
+        "cluster_key": cluster_key,
+        "n_cells": int(adata.n_obs),
+        "n_clusters_true": int(pd.Series(y_true).nunique()),
+        "n_clusters_pred": int(cluster_info["n_clusters"]),
+        "resolution": float(cluster_info["resolution"]),
+        "n_neighbors": int(n_neighbors),
+        "graph_metric": graph_metric,
+        "random_state": int(random_state),
+    }
+
+    results.update(compute_clustering_metrics(y_true=y_true, y_pred=y_pred))
+    results.update(compute_embedding_metrics(X=X_emb, labels=y_pred))
+
+    if spatial_key is not None and spatial_key in adata.obsm and spatial_graph_cache is not None:
+        results.update(
+            compute_spatial_metrics(
+                y_pred=y_pred,
+                spatial=None,
+                n_neighbors=n_neighbors,
+                spatial_graph_cache=spatial_graph_cache,
+            )
+        )
+
+        results.update(
+            compute_spatial_autocorr_metrics(
+                spatial=None,
+                labels=y_pred,
+                n_neighbors=n_neighbors,
+                spatial_graph_cache=spatial_graph_cache,
+            )
+        )
+    elif spatial_key is not None and spatial_key in adata.obsm:
+        spatial = _to_numpy_2d(adata.obsm[spatial_key], spatial_key)
+        local_spatial_graph_cache = precompute_spatial_graph(
+            spatial=spatial,
+            n_neighbors=n_neighbors,
+        )
+
+        results.update(
+            compute_spatial_metrics(
+                y_pred=y_pred,
+                spatial=None,
+                n_neighbors=n_neighbors,
+                spatial_graph_cache=local_spatial_graph_cache,
+            )
+        )
+
+        results.update(
+            compute_spatial_autocorr_metrics(
+                spatial=None,
+                labels=y_pred,
+                n_neighbors=n_neighbors,
+                spatial_graph_cache=local_spatial_graph_cache,
+            )
+        )
+    else:
+        results["neighbor_agreement"] = np.nan
+        results["label_entropy"] = np.nan
+        results["moran_i"] = np.nan
+        results["local_moran_i"] = np.nan
+        results["geary_c"] = np.nan
+
+    if return_details:
+        results["cluster_sizes"] = cluster_info["cluster_sizes"]
+        results["search_history"] = cluster_info["history"]
+
+    if save_plots:
+        if plot_dir is None:
+            raise ValueError("plot_dir must be provided when save_plots=True.")
+
+        if compute_umap and umap_key is None:
+            umap_key = f"X_umap_{method_name}"
+
+        save_method_plots(
+            adata=adata,
+            label_key=label_key,
+            cluster_key=cluster_key,
+            plot_dir=plot_dir,
+            plot_prefix=plot_prefix if plot_prefix is not None else f"{method_name}_{label_key}",
+            spatial_key=spatial_key,
+            umap_key=umap_key,
+            method_name=method_name,
+            ari=results.get("ari", np.nan),
+            plot_ground_truth=plot_ground_truth,
+            spatial_point_size=spatial_point_size,
+            umap_point_size=umap_point_size,
+        )
+
+    return adata, results
 
 
 # =============================================================================
@@ -664,6 +921,14 @@ def run_clustering_benchmark(
             slice_plot_dir = os.path.join(output_dir, str(slice_id))
             os.makedirs(slice_plot_dir, exist_ok=True)
 
+        spatial_graph_cache = None
+        if spatial_key is not None and spatial_key in adata_slice.obsm:
+            spatial = _to_numpy_2d(adata_slice.obsm[spatial_key], spatial_key)
+            spatial_graph_cache = precompute_spatial_graph(
+                spatial=spatial,
+                n_neighbors=n_neighbors,
+            )
+
         gt_written = set()
 
         for method_name in methods:
@@ -685,9 +950,38 @@ def run_clustering_benchmark(
                         f"{embedding_key} not found in adata_slice.obsm for method '{method_name}'."
                     )
 
+            X_emb, final_embedding_key = get_embedding(
+                adata=adata_slice,
+                method_name=method_name,
+                embedding_key=embedding_key,
+                pca_dim=embedding_pca_dim,
+                normalize_before_pca=normalize_before_pca,
+                target_sum=target_sum,
+                random_state=random_state,
+            )
+
+            if final_embedding_key not in adata_slice.obsm:
+                adata_slice.obsm[final_embedding_key] = X_emb
+
+            adata_graph, _ = _prepare_leiden_graph(
+                X=X_emb,
+                n_neighbors=n_neighbors,
+                metric=graph_metric,
+                random_state=random_state,
+                pca_dim=leiden_pca_dim,
+            )
+
+            shared_umap_key = None
+            if compute_umap:
+                shared_umap_key = f"X_umap_{method_name}"
+                if shared_umap_key not in adata_slice.obsm:
+                    adata_slice.obsm[shared_umap_key] = _prepare_umap_from_graph(
+                        adata_graph=adata_graph,
+                        random_state=random_state,
+                    )
+
             for label_key_i in label_keys:
                 plot_prefix = f"{method_name}_{label_key_i}"
-                umap_key = f"X_umap_{method_name}_{label_key_i}" if compute_umap else None
 
                 write_gt = False
                 if plot_ground_truth:
@@ -696,27 +990,25 @@ def run_clustering_benchmark(
                         write_gt = True
                         gt_written.add(gt_tag)
 
-                _, results = evaluate_clustering(
+                _, results = _evaluate_clustering_precomputed(
                     adata=adata_slice,
                     method_name=method_name,
                     label_key=label_key_i,
-                    embedding_key=embedding_key,
+                    X_emb=X_emb,
+                    final_embedding_key=final_embedding_key,
+                    adata_graph=adata_graph,
                     spatial_key=spatial_key,
+                    spatial_graph_cache=spatial_graph_cache,
                     cluster_key=None,
                     target_n_clusters=None,
                     resolution=1.0,
                     n_neighbors=n_neighbors,
                     graph_metric=graph_metric,
                     random_state=random_state,
-                    embedding_pca_dim=embedding_pca_dim,
-                    leiden_pca_dim=leiden_pca_dim,
-                    normalize_before_pca=normalize_before_pca,
-                    target_sum=target_sum,
                     max_iterations=max_iterations,
                     return_details=return_details,
-                    copy=False,
                     compute_umap=compute_umap,
-                    umap_key=umap_key,
+                    umap_key=shared_umap_key,
                     save_plots=save_plots,
                     plot_dir=slice_plot_dir,
                     plot_prefix=plot_prefix,
@@ -732,11 +1024,13 @@ def run_clustering_benchmark(
                 if verbose:
                     ari_val = results.get("ari", np.nan)
                     neighbor_val = results.get("neighbor_agreement", np.nan)
+                    moran_val = results.get("moran_i", np.nan)
                     print(
                         f"    label={label_key_i} | "
                         f"method={method_name} | "
                         f"ARI={ari_val:.4f} | "
-                        f"neighbor_agreement={neighbor_val:.4f}"
+                        f"neighbor_agreement={neighbor_val:.4f} | "
+                        f"moran_i={moran_val:.4f}"
                     )
 
     results_df = pd.DataFrame(all_results)
@@ -748,7 +1042,9 @@ def run_clustering_benchmark(
     ]
     metric_cols = [
         "ari", "nmi", "ami", "homogeneity", "completeness",
-        "v_measure", "purity", "silhouette", "neighbor_agreement", "label_entropy",
+        "v_measure", "purity", "asw",
+        "neighbor_agreement", "label_entropy",
+        "moran_i", "local_moran_i", "geary_c",
     ]
 
     ordered_cols = [c for c in preferred_cols + metric_cols if c in results_df.columns]
@@ -848,6 +1144,7 @@ def merge_and_sort_method_results(
 
     return df
 
+
 def summarize_benchmark_results(
     df: pd.DataFrame,
     groupby_keys=None,
@@ -865,8 +1162,9 @@ def summarize_benchmark_results(
     if metric_cols is None:
         metric_cols = [
             "ari", "nmi", "ami", "homogeneity", "completeness",
-            "v_measure", "purity", "silhouette",
+            "v_measure", "purity", "asw",
             "neighbor_agreement", "label_entropy",
+            "moran_i", "local_moran_i", "geary_c",
         ]
 
     metric_cols = [c for c in metric_cols if c in df.columns]

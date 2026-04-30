@@ -1238,7 +1238,7 @@ def run_stage2_pipeline(
         "starmap": 2,
         "slideseqv2": 3,
         "stereo": 4,
-        "snrna": 5,
+        "snrna": 0,  # map snRNA to merfish platform
     }
 
     if do_fit:

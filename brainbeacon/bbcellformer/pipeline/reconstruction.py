@@ -126,7 +126,7 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                         attention_list.append(attn_tensor)
 
                     if order_required:
-                        order_list.append(input_dict['order_list'])
+                        order_list.append(input_dict['order_list'].cpu())
         torch.cuda.empty_cache()
         pred = torch.cat(pred)
         latent = torch.cat(latent)
