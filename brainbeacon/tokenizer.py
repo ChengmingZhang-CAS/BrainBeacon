@@ -22,7 +22,7 @@ from sklearn.neighbors import BallTree, NearestNeighbors
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 
-from brainbeacon.configs.config import specie_dict
+from brainbeacon.configs.config import species_dict
 from brainbeacon.configs.config import technology_dict
 from brainbeacon.configs.config import MAX_LENGTH
 from brainbeacon.configs.config import AUX_TOKEN
@@ -936,7 +936,7 @@ def standardize_adata_obs(
         adata: ad.AnnData,
         gene_dict: ad.AnnData,
         mean_matrix: np.array,
-        specie: str,
+        species: str,
         assay: str,
         cell_density: bool = True,
 ) -> tuple[ad.AnnData, np.ndarray]:
@@ -946,7 +946,7 @@ def standardize_adata_obs(
     Args:
         adata: Input AnnData object to standardize
         gene_dict: Reference gene dictionary AnnData object
-        specie: Species identifier
+        species: Species identifier
         assay: Assay type identifier
         density: Whether density token is included
 
@@ -993,7 +993,7 @@ def standardize_adata_obs(
 
     adata_output, mean_matrix_aligned = align_adata_and_mean_matrix(adata, gene_dict, mean_matrix)
     adata_output.obs = adata_output.obs.reset_index(drop=True)
-    adata_output.obs['specie'] = specie_dict.get(specie, specie)
+    adata_output.obs['species'] = species_dict.get(species, species)
     adata_output.obs['assay'] = technology_dict.get(normalized_assay, normalized_assay)
 
     return adata_output, mean_matrix_aligned
@@ -1459,10 +1459,10 @@ def _prepend_prefix_tokens(obs_df, x, x_connect_comp, x_rna_type, x_neighbor_gen
         x_exp = np.concatenate((zero_float, x_exp), axis=1)
 
     if config_train["species"] and "species" in obs_df.columns:
-        specie = obs_df["species"].to_numpy(dtype=np.int32).reshape(-1, 1)
+        species = obs_df["species"].to_numpy(dtype=np.int32).reshape(-1, 1)
         zero_int = np.zeros((x.shape[0], 1), dtype=np.int32)
         zero_float = np.zeros((x.shape[0], 1), dtype=np.float32)
-        x = np.concatenate((specie, x), axis=1)
+        x = np.concatenate((species, x), axis=1)
         x_connect_comp = np.concatenate((zero_int, x_connect_comp), axis=1)
         x_rna_type = np.concatenate((zero_int, x_rna_type), axis=1)
         x_neighbor_gene_distribution = np.concatenate((zero_int, x_neighbor_gene_distribution), axis=1)
@@ -1703,7 +1703,7 @@ def process_parquet(input_file, output_path):
         "x": False,
         "y": False,
         "assay": False,
-        "specie": False,
+        "species": False,
         "idx": False,
         "original_index": False,
         "cell_label": False,

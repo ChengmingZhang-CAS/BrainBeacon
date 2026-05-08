@@ -1238,7 +1238,7 @@ def run_stage2_pipeline(
         "starmap": 2,
         "slideseqv2": 3,
         "stereo": 4,
-        "snrna": 0,  # map snRNA to merfish platform
+        "snrna": 5,  # map snRNA to merfish platform
     }
 
     if do_fit:
@@ -1252,7 +1252,7 @@ def run_stage2_pipeline(
         else:
             fit_data = data.copy()
 
-        MAX_CELLS = 50000
+        MAX_CELLS = config["max_train_cells"]
         if fit_data.n_obs > MAX_CELLS:
             print(f"[Warning] Too many cells in slice ({fit_data.n_obs}), subsampling to {MAX_CELLS}")
             sampled_indices = np.random.choice(fit_data.n_obs, MAX_CELLS, replace=False)

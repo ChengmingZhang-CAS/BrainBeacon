@@ -1,4 +1,4 @@
-specie_dict = {
+species_dict = {
     'human': 3,
     'mouse': 4,
     'macaque': 5,

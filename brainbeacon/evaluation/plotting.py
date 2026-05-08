@@ -365,7 +365,7 @@ def plot_metric_comparison(
 
         if error_col is not None and error_col in df.columns:
             plot_df = (
-                df.groupby(x, sort=False, as_index=False)
+                df.groupby(x, sort=False, as_index=False, observed=False)
                 .agg(**{
                     metric: (metric, "mean"),
                     error_col: (error_col, "mean"),
@@ -378,13 +378,13 @@ def plot_metric_comparison(
                 capsize=capsize if use_errorbar else 0,
             )
         else:
-            grouped = df.groupby(x, sort=False)[metric].mean()
+            grouped = df.groupby(x, sort=False, observed=False)[metric].mean()
             ax.bar(grouped.index.astype(str), grouped.values)
 
     elif kind == "box":
         groups = []
         labels = []
-        for group_name, subdf in df.groupby(x, sort=False):
+        for group_name, subdf in df.groupby(x, sort=False, observed=False):
             groups.append(subdf[metric].to_numpy())
             labels.append(str(group_name))
         ax.boxplot(groups, tick_labels=labels)
@@ -470,7 +470,7 @@ def plot_all_metric_comparisons(
         grouped_data = [("all", results_df.copy())]
     else:
         grouped_data = []
-        for group_name, subdf in results_df.groupby(split_by, sort=False):
+        for group_name, subdf in results_df.groupby(split_by, sort=False, observed=False):
             subdf = subdf.copy()
             if len(subdf) > 0:
                 grouped_data.append((str(group_name), subdf))
@@ -603,7 +603,7 @@ def plot_metric_subplots(
         )
 
     grouped_outputs = []
-    for group_name, subdf in results_df.groupby(split_by, sort=False):
+    for group_name, subdf in results_df.groupby(split_by, sort=False, observed=False):
         subdf = subdf.copy()
         if len(subdf) == 0:
             continue
