@@ -341,6 +341,9 @@ class CellEmbeddingPipeline:
             if strict_load:
                 self.model.pretrain_model.load_state_dict(pretrained_dict)
                 print(f"Loaded pretrain_model checkpoint (strict): {self.pretrain_ckpt}")
+
+                # Apply homo-mean override to checkpoint-loaded token embeddings.
+                self.apply_homo_mean_after_load()
                 return
 
             model_dict = self.model.pretrain_model.state_dict()
@@ -364,9 +367,196 @@ class CellEmbeddingPipeline:
             self.model.pretrain_model.load_state_dict(model_dict)
             print(f"Loaded pretrain_model checkpoint (compatible): {self.pretrain_ckpt}")
 
+            # Apply homo-mean override to checkpoint-loaded token embeddings.
+            self.apply_homo_mean_after_load()
+
         except Exception as e:
             print(f"Error loading checkpoint: {e}")
             raise
+
+    def _get_homo_mean_targets(self):
+        """Normalize homo_mean_targets from model_config to a list."""
+        targets = self.model_config.get("homo_mean_targets", [])
+
+        if targets is None:
+            return []
+
+        if isinstance(targets, str):
+            if targets.strip() == "":
+                return []
+            return [x.strip() for x in targets.split(",") if x.strip()]
+
+        return list(targets)
+
+    def _get_gene_token_homo_ids(self, matrix_n_tokens=None):
+        """
+        Build valid gene token IDs and their homo group IDs from gene_dict.
+
+        Index convention:
+            token_id = gene_dict.var["gene_id"] + n_aux
+        """
+        gene_dict_path = self.model_config.get("gene_dict_path", None)
+        if gene_dict_path is None:
+            raise ValueError("homo_mean_targets requires gene_dict_path in model_config.")
+
+        gene_dict = sc.read_h5ad(gene_dict_path)
+        gvar = gene_dict.var.copy()
+
+        required_cols = ["gene_id", "homo_connect_id"]
+        for col in required_cols:
+            if col not in gvar.columns:
+                raise KeyError(f"{col} not found in gene_dict.var.")
+
+        n_aux = int(self.model_config["n_aux"])
+        n_tokens = int(self.model_config["n_tokens"])
+        n_homo = int(self.model_config["n_connect_comp"])
+        expected_total_tokens = n_tokens + n_aux
+
+        if matrix_n_tokens is not None and matrix_n_tokens != expected_total_tokens:
+            raise ValueError(
+                f"Token matrix row mismatch: matrix has {matrix_n_tokens} rows, "
+                f"but expected n_tokens + n_aux = {expected_total_tokens}."
+            )
+
+        gene_ids = gvar["gene_id"].astype(int).values
+        homo_ids = gvar["homo_connect_id"].astype(int).values
+        token_ids = gene_ids + n_aux
+
+        valid = (
+                (gene_ids >= 0)
+                & (gene_ids < n_tokens)
+                & (token_ids >= 0)
+                & (token_ids < expected_total_tokens)
+                & (homo_ids > 0)
+                & (homo_ids <= n_homo)
+        )
+
+        if valid.sum() == 0:
+            raise ValueError("No valid gene tokens found for homo-mean override.")
+
+        token_ids = torch.as_tensor(token_ids[valid], dtype=torch.long)
+        homo_ids = torch.as_tensor(homo_ids[valid], dtype=torch.long)
+
+        return token_ids, homo_ids, n_homo
+
+    @torch.no_grad()
+    def _apply_homo_mean_to_token_matrix(self, matrix, token_ids, homo_ids, n_homo, name):
+        """
+        Replace token-level vectors by their homo-group mean vectors.
+
+        matrix:
+            Shape = (n_tokens + n_aux, dim)
+            Examples:
+                - basic_embedding.weight
+                - esm_embedding_map
+        """
+        if matrix.dim() != 2:
+            raise ValueError(f"{name} must be a 2D matrix, got shape {tuple(matrix.shape)}.")
+
+        device = matrix.device
+        dtype = matrix.dtype
+
+        token_ids = token_ids.to(device=device, dtype=torch.long)
+        homo_ids = homo_ids.to(device=device, dtype=torch.long)
+
+        valid = (
+                (token_ids >= 0)
+                & (token_ids < matrix.shape[0])
+                & (homo_ids > 0)
+                & (homo_ids <= n_homo)
+        )
+
+        token_ids = token_ids[valid]
+        homo_ids = homo_ids[valid]
+
+        if token_ids.numel() == 0:
+            raise ValueError(f"No valid tokens found for {name} homo-mean override.")
+
+        dim = matrix.shape[1]
+        group_sum = torch.zeros(n_homo + 1, dim, device=device, dtype=dtype)
+        group_count = torch.zeros(n_homo + 1, 1, device=device, dtype=dtype)
+
+        token_vec = matrix[token_ids]
+
+        group_sum.index_add_(0, homo_ids, token_vec)
+        group_count.index_add_(
+            0,
+            homo_ids,
+            torch.ones(homo_ids.shape[0], 1, device=device, dtype=dtype),
+        )
+
+        group_mean = group_sum / group_count.clamp(min=1.0)
+
+        # Only groups present in homo_ids are assigned back, so empty groups are never used.
+        matrix[token_ids] = group_mean[homo_ids]
+
+        print(
+            f"[INFO] Applied homo-mean override to {name}: "
+            f"overrode {token_ids.numel()} token vectors "
+            f"using {torch.unique(homo_ids).numel()} homo groups."
+        )
+
+    @torch.no_grad()
+    def apply_homo_mean_after_load(self):
+        """
+        Apply homo-mean override to checkpoint-loaded token-level parameters.
+
+        Currently supported after checkpoint loading:
+            - gene_id: basic_embedding.weight
+        """
+        targets = self._get_homo_mean_targets()
+
+        if len(targets) == 0:
+            return
+
+        unsupported = set(targets) - {"gene_id", "esm"}
+        if unsupported:
+            raise ValueError(
+                f"Unsupported homo_mean_targets: {unsupported}. "
+                f"Supported targets are ['gene_id', 'esm']."
+            )
+
+        if "gene_id" not in targets:
+            return
+
+        gene_id_matrix = self.model.pretrain_model.embedding.basic_embedding.weight
+        token_ids, homo_ids, n_homo = self._get_gene_token_homo_ids(
+            matrix_n_tokens=gene_id_matrix.shape[0]
+        )
+
+        self._apply_homo_mean_to_token_matrix(
+            matrix=gene_id_matrix,
+            token_ids=token_ids,
+            homo_ids=homo_ids,
+            n_homo=n_homo,
+            name="gene_id_embedding",
+        )
+
+    @torch.no_grad()
+    def apply_homo_mean_to_esm_map(self, esm_embedding_map):
+        """
+        Apply homo-mean override to ESM embedding map when requested.
+
+        ESM is loaded during inference, so this is called after torch.load().
+        """
+        targets = self._get_homo_mean_targets()
+
+        if "esm" not in targets:
+            return esm_embedding_map
+
+        token_ids, homo_ids, n_homo = self._get_gene_token_homo_ids(
+            matrix_n_tokens=esm_embedding_map.shape[0]
+        )
+
+        self._apply_homo_mean_to_token_matrix(
+            matrix=esm_embedding_map,
+            token_ids=token_ids,
+            homo_ids=homo_ids,
+            n_homo=n_homo,
+            name="esm_embedding_map",
+        )
+
+        return esm_embedding_map
 
     def load_dataset(self, data_paths: List[str]):
         """
@@ -472,6 +662,8 @@ class CellEmbeddingPipeline:
         self.model.eval()
         # Load ESM embedding map
         esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location='cpu')
+        esm_embedding_map = self.apply_homo_mean_to_esm_map(esm_embedding_map)
+
         indexed_embeddings = []
         attention_weights_list = []
 
@@ -766,6 +958,7 @@ def run_bb_inference_fast(
 
     # esm_embedding_map = torch.load(config_train["esm_embedding_path"], map_location="cpu")
     esm_embedding_map = torch.load(esm_emb_path, map_location="cpu").to(device)
+    esm_embedding_map = pipeline.apply_homo_mean_to_esm_map(esm_embedding_map)  #
 
     pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
     weight_mode = config_train.get("weight_mode", "expression")
@@ -1077,7 +1270,7 @@ def run_stage1_pipeline(
 
     force_tokenize = config_train.get("force_tokenize", True)
     use_hvg = config_train.get("use_hvg", True)
-    n_hvg = config_train.get("n_hvg", 1000)
+    n_hvg = config_train.get("n_hvg", 5000)
     use_dev_abs = config_train.get("use_dev_abs", True)
 
     # ====== Disk mode ======

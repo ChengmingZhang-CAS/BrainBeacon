@@ -7,8 +7,8 @@ stage1_config = {
     'nheads': 16,
     'nlayers': 16,
     'dropout': 0.1,
-    # 'dim_model': 1024,
-    'dim_model': 256,
+    'dim_model': 1024,
+    # 'dim_model': 256,
     'batch_first': True,
     'n_tokens': 92076,
     # 'n_connect_comp': 46502,
@@ -39,6 +39,7 @@ stage1_config = {
     'use_homo_emb': True,
     'use_esm_emb': True,
     'use_rna_type_emb': True,
+    "homo_mean_targets": [],  # "homo_mean_targets": ["gene_id", "esm"]
     # 'neighbor_enhance': True,
     # 'num_neighbors': 4,  # legacy
     'use_gene_deviation': True,
