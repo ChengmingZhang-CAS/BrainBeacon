@@ -1428,13 +1428,13 @@ def run_stage2_pipeline(
             covariate_encoders=covariate_encoders,
             device=device
         )
-    if config.get("fit_only", False):
-        if save_model_path is not None:
-            torch.save(pipeline.model.state_dict(), save_model_path)
-            print(f"Model saved to {save_model_path}")
-        print("[INFO] fit_only=True. Skip Stage2 prediction.")
-        torch.cuda.empty_cache()
-        return data
+        if config.get("fit_only", False):
+            if save_model_path is not None:
+                torch.save(pipeline.model.state_dict(), save_model_path)
+                print(f"Model saved to {save_model_path}")
+            print("[INFO] fit_only=True. Skip Stage2 prediction.")
+            torch.cuda.empty_cache()
+            return data
 
     inference_config = {
         'max_eval_batch_size': config['max_eval_batch_size'],
@@ -1789,6 +1789,7 @@ def train_stage2_on_multi_adata(
     ckpt_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
+    stage2_config = {} if stage2_config is None else copy.deepcopy(stage2_config)
     stage2_config["fit_only"] = fit_only
     for global_epoch in range(num_global_epochs):
         print(f"\n========== Global Epoch {global_epoch + 1}/{num_global_epochs} ==========")
