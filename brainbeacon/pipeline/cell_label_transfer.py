@@ -210,15 +210,20 @@ def preprocess_one_adata(
         adata.var["genenames"] = adata.var['gene_symbol']
 
     # 2) spatial coords
-    if "spatial" not in adata.obsm and info["assay"] != "snrna":
-        if 'rx' in adata.obs and 'ry' in adata.obs:
-            adata.obsm["spatial"] = adata.obs[["rx", "ry"]].values
-        elif 'x' in adata.obs and 'y' in adata.obs:
-            adata.obsm["spatial"] = adata.obs[["x", "y"]].values
+    if "spatial" in adata.obsm:
+        adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=float)
+        print(f"[INFO] Spatial coordinates already exist in {info['data_name']}.")
+    elif info["assay"] == "snrna":
+        print(f"[INFO] {info['data_name']} is snRNA-seq. Skip spatial coordinate setup.")
+    else:
+        if "rx" in adata.obs.columns and "ry" in adata.obs.columns:
+            adata.obsm["spatial"] = adata.obs[["rx", "ry"]].values.astype(float)
+            print(f"[INFO] Spatial coordinates added from rx/ry for {info['data_name']}.")
+        elif "x" in adata.obs.columns and "y" in adata.obs.columns:
+            adata.obsm["spatial"] = adata.obs[["x", "y"]].values.astype(float)
+            print(f"[INFO] Spatial coordinates added from x/y for {info['data_name']}.")
         else:
             warnings.warn(f"Spatial coordinates not found for {info['data_name']}. Skipping smoothing.")
-    else:
-        print(f"[INFO] Spatial coordinates already exist in {info['data_name']}.")
 
     if "spatial" in adata.obsm:
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=float)
@@ -226,7 +231,7 @@ def preprocess_one_adata(
         adata = adata[valid_idx].copy()
 
     # 3) optional spatial smoothing (before HVG)
-    if smooth_st and "spatial" in adata.obsm:
+    if smooth_st and info["assay"] != "snrna" and "spatial" in adata.obsm:
         manual_spatial_smooth(adata, layer_key='smooth', n_neighbors=smooth_k)
         adata.X = adata.layers["smooth"]
 

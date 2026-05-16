@@ -375,58 +375,50 @@ class CellEmbeddingPipeline:
             raise
 
     def _get_homo_mean_targets(self):
-        """Normalize homo_mean_targets from model_config to a list."""
+        """Return enabled homo-mean targets."""
         targets = self.model_config.get("homo_mean_targets", [])
-
         if targets is None:
             return []
-
         if isinstance(targets, str):
-            if targets.strip() == "":
-                return []
             return [x.strip() for x in targets.split(",") if x.strip()]
-
         return list(targets)
 
     def _get_gene_token_homo_ids(self, matrix_n_tokens=None):
-        """
-        Build valid gene token IDs and their homo group IDs from gene_dict.
+        """Build valid gene token IDs and homo group IDs from gene_dict."""
+        cache_key = "_cached_gene_token_homo_ids"
+        if hasattr(self, cache_key):
+            token_ids, homo_ids, n_homo = getattr(self, cache_key)
+            if matrix_n_tokens is not None and token_ids.max().item() >= matrix_n_tokens:
+                raise ValueError(
+                    f"Token matrix row mismatch: max token_id={token_ids.max().item()}, "
+                    f"but matrix has {matrix_n_tokens} rows."
+                )
+            return token_ids, homo_ids, n_homo
 
-        Index convention:
-            token_id = gene_dict.var["gene_id"] + n_aux
-        """
         gene_dict_path = self.model_config.get("gene_dict_path", None)
         if gene_dict_path is None:
             raise ValueError("homo_mean_targets requires gene_dict_path in model_config.")
 
         gene_dict = sc.read_h5ad(gene_dict_path)
-        gvar = gene_dict.var.copy()
+        gvar = gene_dict.var
 
-        required_cols = ["gene_id", "homo_connect_id"]
-        for col in required_cols:
+        for col in ["gene_id", "homo_connect_id"]:
             if col not in gvar.columns:
                 raise KeyError(f"{col} not found in gene_dict.var.")
 
         n_aux = int(self.model_config["n_aux"])
         n_tokens = int(self.model_config["n_tokens"])
         n_homo = int(self.model_config["n_connect_comp"])
-        expected_total_tokens = n_tokens + n_aux
-
-        if matrix_n_tokens is not None and matrix_n_tokens != expected_total_tokens:
-            raise ValueError(
-                f"Token matrix row mismatch: matrix has {matrix_n_tokens} rows, "
-                f"but expected n_tokens + n_aux = {expected_total_tokens}."
-            )
 
         gene_ids = gvar["gene_id"].astype(int).values
-        homo_ids = gvar["homo_connect_id"].astype(int).values
+        homo_ids = gvar["homo_connect_id"].astype(int).values + 1
         token_ids = gene_ids + n_aux
 
         valid = (
                 (gene_ids >= 0)
                 & (gene_ids < n_tokens)
                 & (token_ids >= 0)
-                & (token_ids < expected_total_tokens)
+                & (matrix_n_tokens is None or token_ids < matrix_n_tokens)
                 & (homo_ids > 0)
                 & (homo_ids <= n_homo)
         )
@@ -437,48 +429,29 @@ class CellEmbeddingPipeline:
         token_ids = torch.as_tensor(token_ids[valid], dtype=torch.long)
         homo_ids = torch.as_tensor(homo_ids[valid], dtype=torch.long)
 
+        setattr(self, cache_key, (token_ids, homo_ids, n_homo))
         return token_ids, homo_ids, n_homo
 
     @torch.no_grad()
-    def _apply_homo_mean_to_token_matrix(self, matrix, token_ids, homo_ids, n_homo, name):
-        """
-        Replace token-level vectors by their homo-group mean vectors.
-
-        matrix:
-            Shape = (n_tokens + n_aux, dim)
-            Examples:
-                - basic_embedding.weight
-                - esm_embedding_map
-        """
+    def _apply_homo_mean_to_token_matrix(self, matrix, name):
+        """Replace token-level vectors by homo-group mean vectors."""
         if matrix.dim() != 2:
             raise ValueError(f"{name} must be a 2D matrix, got shape {tuple(matrix.shape)}.")
 
-        device = matrix.device
-        dtype = matrix.dtype
-
-        token_ids = token_ids.to(device=device, dtype=torch.long)
-        homo_ids = homo_ids.to(device=device, dtype=torch.long)
-
-        valid = (
-                (token_ids >= 0)
-                & (token_ids < matrix.shape[0])
-                & (homo_ids > 0)
-                & (homo_ids <= n_homo)
+        token_ids, homo_ids, n_homo = self._get_gene_token_homo_ids(
+            matrix_n_tokens=matrix.shape[0]
         )
 
-        token_ids = token_ids[valid]
-        homo_ids = homo_ids[valid]
-
-        if token_ids.numel() == 0:
-            raise ValueError(f"No valid tokens found for {name} homo-mean override.")
+        device = matrix.device
+        dtype = matrix.dtype
+        token_ids = token_ids.to(device=device)
+        homo_ids = homo_ids.to(device=device)
 
         dim = matrix.shape[1]
         group_sum = torch.zeros(n_homo + 1, dim, device=device, dtype=dtype)
         group_count = torch.zeros(n_homo + 1, 1, device=device, dtype=dtype)
 
-        token_vec = matrix[token_ids]
-
-        group_sum.index_add_(0, homo_ids, token_vec)
+        group_sum.index_add_(0, homo_ids, matrix[token_ids])
         group_count.index_add_(
             0,
             homo_ids,
@@ -486,26 +459,17 @@ class CellEmbeddingPipeline:
         )
 
         group_mean = group_sum / group_count.clamp(min=1.0)
-
-        # Only groups present in homo_ids are assigned back, so empty groups are never used.
         matrix[token_ids] = group_mean[homo_ids]
 
         print(
             f"[INFO] Applied homo-mean override to {name}: "
-            f"overrode {token_ids.numel()} token vectors "
-            f"using {torch.unique(homo_ids).numel()} homo groups."
+            f"{token_ids.numel()} tokens, {torch.unique(homo_ids).numel()} homo groups."
         )
 
     @torch.no_grad()
     def apply_homo_mean_after_load(self):
-        """
-        Apply homo-mean override to checkpoint-loaded token-level parameters.
-
-        Currently supported after checkpoint loading:
-            - gene_id: basic_embedding.weight
-        """
+        """Apply homo-mean override to checkpoint-loaded gene ID embedding."""
         targets = self._get_homo_mean_targets()
-
         if len(targets) == 0:
             return
 
@@ -516,46 +480,18 @@ class CellEmbeddingPipeline:
                 f"Supported targets are ['gene_id', 'esm']."
             )
 
-        if "gene_id" not in targets:
-            return
-
-        gene_id_matrix = self.model.pretrain_model.embedding.basic_embedding.weight
-        token_ids, homo_ids, n_homo = self._get_gene_token_homo_ids(
-            matrix_n_tokens=gene_id_matrix.shape[0]
-        )
-
-        self._apply_homo_mean_to_token_matrix(
-            matrix=gene_id_matrix,
-            token_ids=token_ids,
-            homo_ids=homo_ids,
-            n_homo=n_homo,
-            name="gene_id_embedding",
-        )
+        if "gene_id" in targets:
+            gene_id_matrix = self.model.pretrain_model.embedding.basic_embedding.weight
+            self._apply_homo_mean_to_token_matrix(gene_id_matrix, "gene_id_embedding")
 
     @torch.no_grad()
     def apply_homo_mean_to_esm_map(self, esm_embedding_map):
-        """
-        Apply homo-mean override to ESM embedding map when requested.
-
-        ESM is loaded during inference, so this is called after torch.load().
-        """
+        """Apply homo-mean override to ESM embedding map when requested."""
         targets = self._get_homo_mean_targets()
-
         if "esm" not in targets:
             return esm_embedding_map
 
-        token_ids, homo_ids, n_homo = self._get_gene_token_homo_ids(
-            matrix_n_tokens=esm_embedding_map.shape[0]
-        )
-
-        self._apply_homo_mean_to_token_matrix(
-            matrix=esm_embedding_map,
-            token_ids=token_ids,
-            homo_ids=homo_ids,
-            n_homo=n_homo,
-            name="esm_embedding_map",
-        )
-
+        self._apply_homo_mean_to_token_matrix(esm_embedding_map, "esm_embedding_map")
         return esm_embedding_map
 
     def load_dataset(self, data_paths: List[str]):
@@ -1417,6 +1353,12 @@ def run_stage2_pipeline(
             data.obs.loc[idx, 'x_FOV_px'] = normalized[:, 0]
             data.obs.loc[idx, 'y_FOV_px'] = normalized[:, 1]
 
+    platform_is_snrna = "platform" in data.obs.columns and data.obs["platform"].astype(str).str.lower().eq("snrna").all()
+    if "spatial" not in data.obsm or platform_is_snrna:
+        config = dict(config)
+        config.update({"sampling_mode": "random", "use_patch": False, "eval_use_patch": False})
+        print("[INFO] Non-spatial or snRNA-seq data detected. Disable Stage2 spatial patch mode.")
+
     # clear GPU memory before re-initializing the pipeline
     torch.cuda.empty_cache()
     pipeline = ReconstructPipeline(
@@ -1486,6 +1428,14 @@ def run_stage2_pipeline(
             covariate_encoders=covariate_encoders,
             device=device
         )
+    if config.get("fit_only", False):
+        if save_model_path is not None:
+            torch.save(pipeline.model.state_dict(), save_model_path)
+            print(f"Model saved to {save_model_path}")
+        print("[INFO] fit_only=True. Skip Stage2 prediction.")
+        torch.cuda.empty_cache()
+        return data
+
     inference_config = {
         'max_eval_batch_size': config['max_eval_batch_size'],
         'use_patch': config.get("eval_use_patch", True),
@@ -1745,6 +1695,7 @@ def train_stage2_on_multi_adata(
     shuffle_each_epoch: bool = True,
     use_single_slice: bool = False,
     stage1_mode: str = "memory",
+    fit_only: bool = True,
     device=None,
     seed: int = 42,
     deterministic: bool = True,
@@ -1804,6 +1755,8 @@ def train_stage2_on_multi_adata(
         Whether to use a single slice in Stage2 fitting.
     stage1_mode : str, default="memory"
         One of {"disk", "memory"}.
+    fit_only : bool, default=True
+        Whether to run Stage2 in fit-only mode (no prediction, just update the model).
     device : torch.device or str or None
         Compute device.
     seed : int, default=42
@@ -1836,6 +1789,7 @@ def train_stage2_on_multi_adata(
     ckpt_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
+    stage2_config["fit_only"] = fit_only
     for global_epoch in range(num_global_epochs):
         print(f"\n========== Global Epoch {global_epoch + 1}/{num_global_epochs} ==========")
 
