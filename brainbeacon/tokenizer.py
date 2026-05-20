@@ -32,6 +32,9 @@ from brainbeacon.configs.stage1_config import stage1_config
 config_train = stage1_config
 config_train["single_context_length"] = config_train["context_length"]
 
+DUMMY_DENSITY_TOKEN = int(cell_density_bin_dict.get("cell_density_bin_2", 17))
+DUMMY_DEVIATION_BIN = 0
+
 platform_resolution_um = {
     "XENIUM": 0.2,
     "STARMAP": 0.1,
@@ -970,7 +973,8 @@ def standardize_adata_obs(
             adata.obs["x"] = spatial_array[:, 0]
             adata.obs["y"] = spatial_array[:, 1]
 
-    keys_to_keep = ['brain_region', 'x', 'y', 'original_index', 'slice', "cell_label", "region"]
+    # keys_to_keep = ['brain_region', 'x', 'y', 'original_index', 'slice', "cell_label", "region"]
+    keys_to_keep = ['brain_region', 'x', 'y', 'original_index', 'slice', "cell_label", "region", "density_token"]
     if isinstance(cell_density, bool) and cell_density:
         print("Computing cell density...")
         time0 = time.time()
@@ -982,9 +986,15 @@ def standardize_adata_obs(
         adata, _ = compute_density_token(adata, radius_um=radius, n_bins=5)
         density_map = {i: cell_density_bin_dict[f"cell_density_bin_{i}"] for i in range(5)}
         adata.obs["density_token"] = adata.obs["density_token"].map(density_map).astype(int)
-        keys_to_keep.append("density_token")
+        # keys_to_keep.append("density_token")
         time1 = time.time()
         print(f"compute_density_token time: {(time1 - time0):.4f} seconds")
+    else:
+        adata.obs["density_token"] = DUMMY_DENSITY_TOKEN
+        print(
+            f"[TOKENIZER] cell_density=False; "
+            f"use fixed dummy density token = {DUMMY_DENSITY_TOKEN}"
+        )
 
     columns_to_delete = [col for col in adata.obs.columns if col not in keys_to_keep]
     adata.obs = adata.obs.drop(columns=columns_to_delete)
@@ -1436,6 +1446,11 @@ def _prepend_prefix_tokens(obs_df, x, x_connect_comp, x_rna_type, x_neighbor_gen
 
     if obs_df is None:
         return x, x_connect_comp, x_rna_type, x_neighbor_gene_distribution, x_exp
+
+    required_cols = ["species", "assay", "density_token"]
+    missing_cols = [col for col in required_cols if col not in obs_df.columns]
+    if missing_cols:
+        raise KeyError(f"Missing required prefix columns: {missing_cols}")
 
     if "density_token" in obs_df.columns:
         density_token = obs_df["density_token"].to_numpy(dtype=np.int32).reshape(-1, 1)

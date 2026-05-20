@@ -899,8 +899,8 @@ def run_bb_inference_fast(
     pool_skip_tokens = config_train.get("pool_skip_tokens", 2)
     weight_mode = config_train.get("weight_mode", "expression")
     cd_weight = config_train.get("cd_weight", 0.02)
-    # if not config_train.get("use_cell_density", True):
-    #     cd_weight = 0.0
+    if not config_train.get("use_cell_density", True):
+        cd_weight = 0.0
     expr_mode = config_train.get("expr_mode", None)
 
     all_indices = []
@@ -947,24 +947,16 @@ def run_bb_inference_fast(
             # ====== Pooling on GPU ======
             if weight_mode == "expression":
                 aux = torch.zeros((exp.shape[0], 2), device=exp.device)
-
-                if use_cell_density:
-                    cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device)
-                    gene_expr = exp[:, 3:]
-                else:
-                    gene_expr = exp[:, 2:]
+                cd = torch.full((exp.shape[0], 1), cd_weight, device=exp.device)
+                gene_expr = exp[:, 3:]
 
                 if expr_mode == "log1pnorm":
                     gene_expr = torch.log1p(gene_expr) / torch.log(
                         torch.tensor(2.0, device=gene_expr.device)
                     )
+
                 gene_expr = gene_expr / gene_expr.sum(dim=1, keepdim=True).clamp(min=1e-6)
-
-                if use_cell_density:
-                    exp_full = torch.cat([aux, cd, gene_expr], dim=1)
-                else:
-                    exp_full = torch.cat([aux, gene_expr], dim=1)
-
+                exp_full = torch.cat([aux, cd, gene_expr], dim=1)
                 expr_weights = exp_full[:, pool_skip_tokens:]
             else:
                 expr_weights = None

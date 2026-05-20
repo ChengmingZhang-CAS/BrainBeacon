@@ -358,6 +358,7 @@ class HiddenMaskBuilder(nn.Module):
 
         num_nodes = x_dict['x_seq'].shape[0]
         if self.training and self._sampling_mode == "spatial" and num_nodes > self._max_batch_size:
+            print("Applying spatial patch sampling with center_ratio =", self._center_ratio)
             return build_spatial_patch_mask(
                 x_dict=x_dict,
                 center_ratio=self._center_ratio,
