@@ -1042,15 +1042,14 @@ def tokenization_h5ad(adata, gene_dict_path, species=None, assay=None, output_pa
         adata = adata[adata.obs["split"] == split]
         if label:
             adata.obs['cell_label'] = adata.obs[label]
-            # 保存 LabelEncoder 到 `output_path`
+
             assert output_path, "Output path must be provided."
-            parent_output_path = os.path.dirname(output_path)  # 获取上一级目录
-            le_path = os.path.join(parent_output_path, "label_encoder.pkl")  # 在父目录存储
-            # 如果 label_encoder.pkl 存在，则加载，否则重新训练
+            parent_output_path = os.path.dirname(output_path)
+            le_path = os.path.join(parent_output_path, "label_encoder.pkl")
             if os.path.exists(le_path):
                 with open(le_path, "rb") as f:
                     le = pickle.load(f)
-                cell_labels_int = le.transform(adata.obs['cell_label'])  # 只 transform
+                cell_labels_int = le.transform(adata.obs['cell_label'])  # only transform
                 print(f"Loaded existing LabelEncoder from {le_path}")
             else:
                 le = LabelEncoder()
@@ -1105,7 +1104,7 @@ def tokenization_h5ad(adata, gene_dict_path, species=None, assay=None, output_pa
 
     else:
         adata_output.obsm["deviation_bin"] = np.zeros((adata_output.shape[0], adata_output.shape[1]), dtype=np.int8)
-        adata_output.obs["density_token"] = np.zeros((adata_output.shape[0]), dtype=np.int8)
+        # adata_output.obs["density_token"] = np.zeros((adata_output.shape[0]), dtype=np.int8)
 
     obs_adata_output = adata_output.obs
     N_BATCHES = math.ceil(obs_adata_output.shape[0] / 10_000)
@@ -1151,7 +1150,7 @@ def tokenization_h5ad(adata, gene_dict_path, species=None, assay=None, output_pa
         )
 
         available_columns = []
-        for col in ['brain_region', 'brain_region_main', 'x', 'y', 'assay', 'specie', 'idx', "original_index",
+        for col in ['brain_region', 'brain_region_main', 'x', 'y', 'assay', 'species', 'idx', "original_index",
                     "cell_label", "density_token"]:
             if col in obs_tokens.columns:
                 available_columns.append(col)
@@ -1318,10 +1317,10 @@ def tokenize_adata_in_memory(
             (adata_output.shape[0], adata_output.shape[1]),
             dtype=np.int8,
         )
-        adata_output.obs["density_token"] = np.zeros(
-            adata_output.shape[0],
-            dtype=np.int8,
-        )
+        # adata_output.obs["density_token"] = np.zeros(
+        #     adata_output.shape[0],
+        #     dtype=np.int8,
+        # )
 
     # ====== Tokenize in chunks ======
     obs_df = adata_output.obs.reset_index()
