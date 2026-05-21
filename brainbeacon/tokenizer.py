@@ -199,8 +199,8 @@ def normalize_gene_dict_var(gene_dict):
     for source, target in rename_candidates.items():
         if target not in gene_dict.var.columns and source in gene_dict.var.columns:
             gene_dict.var[target] = gene_dict.var[source]
-    # required_columns = {"gene_id", "homo_connect_id", "gene_type_id"}
-    required_columns = {"gene_id", "homo_connect_id_old", "gene_type_id"}
+    required_columns = {"gene_id", "homo_connect_id", "gene_type_id"}
+    # required_columns = {"gene_id", "homo_connect_id_old", "gene_type_id"}
     missing = required_columns.difference(gene_dict.var.columns)
     if missing:
         missing_list = ", ".join(sorted(missing))
@@ -220,8 +220,12 @@ def resolve_mean_var_column(assay, available_columns):
     return column, used_fallback, candidates
 
 
-def load_gene_dict_and_mean(gene_dict_path, assay):
+def load_gene_dict_and_mean(gene_dict_path, assay, use_mean_norm: bool = True):
     gene_dict = normalize_gene_dict_var(sc.read_h5ad(gene_dict_path))
+    if not use_mean_norm:
+        print("[TOKENIZER] use_mean_norm=False; skip gene mean normalization and use mean_matrix=1.")
+        return gene_dict, np.ones(gene_dict.n_vars, dtype=np.float32)
+
     mean_column, used_fallback, candidates = resolve_mean_var_column(assay, gene_dict.var.columns)
     if mean_column is None:
         return gene_dict, np.ones(gene_dict.n_vars, dtype=np.float32)
@@ -259,119 +263,6 @@ def compute_density_token(adata, radius_um=100, n_bins=5):
 
     adata.obs["density_token"] = density_tokens
     return adata, density_tokens
-
-
-def spatial_expression_imputation_yyw(adata, spatial_key='spatial', expr_key='X',
-                                      n_neighbors=20, spatial_weight=0.5,
-                                      min_genes=50, min_cells=50, n_pcs=50,
-                                      use_raw_counts=True,
-                                      chunk_size=1000,
-                                      progress_bar=True):
-    """
-    based on spatial and expression similarity to impute gene expression values.
-
-    Args:
-        adata: AnnData object
-        spatial_key: The key for spatial coordinates in adata.obsm
-        expr_key: The key for expression matrix
-        n_neighbors: The number of neighbors to use for imputation
-        spatial_weight: The weight for spatial similarity (0-1)
-        min_genes: The minimum number of genes required when filtering cells
-        min_cells: The minimum number of cells required when filtering genes
-        n_pcs: The number of principal components to use for PCA
-        use_raw_counts: Whether to use raw counts
-        chunk_size: The number of cells to process in each chunk
-        progress_bar: Whether to show a progress bar
-    """
-
-    start_time = time.time()
-
-    print("data preprocessing...")
-    adata = adata.copy()
-
-    # Basic filtering
-    sc.pp.filter_cells(adata, min_genes=min_cells)
-    sc.pp.filter_genes(adata, min_cells=min_genes)
-    # adata = adata[:2000, :].copy()
-    if use_raw_counts and adata.raw is None:
-        adata.raw = adata.copy()
-
-    # Normalize expression matrix for similarity computation
-    norm_adata = adata.copy()
-    sc.pp.normalize_total(norm_adata, target_sum=1e4)
-    # sc.pp.log1p(norm_adata)
-
-    print("Identifying highly variable genes...")
-    sc.pp.highly_variable_genes(norm_adata, flavor='seurat_v3', n_top_genes=2000)
-    norm_adata = norm_adata[:, norm_adata.var.highly_variable]
-
-    print("PCA...")
-    sc.pp.scale(norm_adata, max_value=10)
-    sc.tl.pca(norm_adata, n_comps=n_pcs)
-
-    print("Computing spatial neighbors...")
-    spatial_coords = adata.obsm[spatial_key]
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='kd_tree').fit(spatial_coords)
-    spatial_distances, spatial_indices = nbrs.kneighbors(spatial_coords)
-
-    # Get expression matrix for imputation
-    if use_raw_counts and adata.raw is not None:
-        expr_matrix = adata.raw.X
-    else:
-        expr_matrix = adata.X
-
-    # Ensure expression matrix is in sparse format to save memory
-    if not issparse(expr_matrix):
-        expr_matrix = csr_matrix(expr_matrix)
-
-    # Initialize imputation result matrix
-    imputed_expr = np.zeros((adata.n_obs, adata.n_vars), dtype=np.float32)
-
-    print("Executing expression imputation...")
-    n_chunks = int(np.ceil(adata.n_obs / chunk_size))
-
-    chunk_iter = range(n_chunks)
-    if progress_bar:
-        chunk_iter = tqdm(chunk_iter, desc="Imputation Progress")
-
-    for chunk_idx in chunk_iter:
-        start_idx = chunk_idx * chunk_size
-        end_idx = min((chunk_idx + 1) * chunk_size, adata.n_obs)
-
-        for i in range(start_idx, end_idx):
-            # Get neighbor information
-            neighbors = spatial_indices[i]
-
-            # Compute expression similarity
-            expr_similarity = cosine_similarity(
-                norm_adata.obsm['X_pca'][i].reshape(1, -1),
-                norm_adata.obsm['X_pca'][neighbors]
-            ).flatten()
-
-            # Compute spatial similarity (using Gaussian kernel)
-            spatial_similarity = np.exp(-spatial_distances[i] ** 2 / (2 * np.mean(spatial_distances[i]) ** 2))
-
-            # Normalize weights
-            expr_similarity = expr_similarity / np.max(expr_similarity)
-            spatial_similarity = spatial_similarity / np.max(spatial_similarity)
-
-            # Combine weights
-            weights = (1 - spatial_weight) * expr_similarity + spatial_weight * spatial_similarity
-            weights = weights / np.sum(weights)
-
-            # Extract neighbor expression values and compute weighted average
-            neighbor_expr = expr_matrix[neighbors].toarray()
-            imputed_expr[i] = np.average(neighbor_expr, axis=0, weights=weights)
-
-            # Ensure non-negativity
-            imputed_expr[i] = np.maximum(imputed_expr[i], 0)
-    # Save imputed expression back to AnnData
-    adata.X = csr_matrix(imputed_expr)
-
-    print(f"Done! Processed {adata.n_obs} cells")
-    print(f"Total time taken: {time.time() - start_time:.2f} seconds")
-
-    return adata
 
 
 def spatial_expression_imputation(adata, spatial_key='spatial', expr_key='X',
@@ -466,37 +357,6 @@ def spatial_expression_imputation(adata, spatial_key='spatial', expr_key='X',
     print(f"Time: {time.time() - start_time:.2f} sec")
 
     return adata
-
-
-def ensure_ensembl_ids_raw(adata, species="hsapiens"):
-    """
-    Ensure gene IDs are Ensembl.
-    If current var_names are symbols, convert them to Ensembl IDs.
-
-    """
-    print(f"[INFO] Converting gene symbols to Ensembl IDs for {species} ...")
-
-    # Get biomart dataset
-    from pybiomart import Dataset
-    dataset = Dataset(name=f"{species}_gene_ensembl",
-                      host="http://www.ensembl.org")
-
-    mapping = dataset.query(attributes=['ensembl_gene_id', 'external_gene_name'])
-    mapping = mapping.dropna().drop_duplicates()
-    symbol_to_ensembl = dict(zip(mapping['Gene name'], mapping['Gene stable ID']))
-
-    # Map
-    adata.var["ensembl_id"] = adata.var_names.map(symbol_to_ensembl)
-
-    # Drop genes without mapping
-    mask = adata.var["ensembl_id"].notna()
-    adata = adata[:, mask].copy()
-    adata.var_names = adata.var["ensembl_id"]
-
-    print(f"[INFO] Converted {mask.sum()} / {len(mask)} genes to Ensembl IDs.")
-
-    return adata
-
 
 def ensure_ensembl_ids(adata, species="human"):
     """
@@ -1012,14 +872,14 @@ def standardize_adata_obs(
 def tokenization_h5ad(adata, gene_dict_path, species=None, assay=None, output_path=None, anno=False,
                       split="train", label=False, cell_density=True, gene_niche=True,
                       use_hvg=True, n_hvg=2000, min_genes=3, min_cells=3, spatial_imputation=False,
-                      use_dev_abs=True):
+                      use_dev_abs=True, use_mean_norm=True):
     """
     Brainbeacon input tokenization.
     Convert H5ad directly to batched .job outputs.
     """
     assert gene_dict_path, "Input `gene_dict_path` cannot be empty."
     normalized_assay = normalize_assay_name(assay)
-    gene_dict, mean_matrix = load_gene_dict_and_mean(gene_dict_path, normalized_assay)
+    gene_dict, mean_matrix = load_gene_dict_and_mean(gene_dict_path, normalized_assay, use_mean_norm)
     print(f"adata to process: {adata.shape}")
     # adata = sc.read_h5ad(adata_path)
 
@@ -1202,6 +1062,7 @@ def tokenize_adata_in_memory(
     cell_density: bool = True,
     gene_niche: bool = True,
     spatial_imputation: bool = False,
+    use_mean_norm: bool = True,
 
 ) -> dict:
     """
@@ -1250,7 +1111,7 @@ def tokenize_adata_in_memory(
 
     adata = adata.copy()
     normalized_assay = normalize_assay_name(assay)
-    gene_dict, mean_matrix = load_gene_dict_and_mean(gene_dict_path, normalized_assay)
+    gene_dict, mean_matrix = load_gene_dict_and_mean(gene_dict_path, normalized_assay, use_mean_norm=use_mean_norm)
 
     # ====== Assay-specific settings ======
     if normalized_assay == "snrna":

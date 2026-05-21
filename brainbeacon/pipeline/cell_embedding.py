@@ -854,6 +854,8 @@ def run_bb_inference_fast(
     t_tok = time.time()
     use_cell_density = config_train.get("use_cell_density", True)
     use_gene_deviation = config_train.get("use_gene_deviation", True)
+    use_mean_norm = config_train.get("use_mean_norm", True)
+
     token_dict = tokenize_adata_in_memory(
         adata,
         gene_dict_path,
@@ -864,6 +866,7 @@ def run_bb_inference_fast(
         use_dev_abs=use_dev_abs,
         cell_density=use_cell_density,
         gene_niche=use_gene_deviation,
+        use_mean_norm=use_mean_norm,
     )
     print(
         f"[Stage1 memory] Tokenization done: "

@@ -54,6 +54,7 @@ stage1_config = {
 
     'use_hvg': True,
     'n_hvg': 5000,
+    'use_mean_norm': True,
     'weight_mode': 'expression',
     'expr_mode': None,
     'force_tokenize': False,
