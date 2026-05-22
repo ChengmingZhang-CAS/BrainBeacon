@@ -1056,6 +1056,7 @@ def tokenize_adata_in_memory(
     assay: str,
     use_hvg: bool = True,
     n_hvg: int = 1000,
+    hvg_log1p: bool = False,
     use_dev_abs: bool = False,
     min_genes: int = 3,
     min_cells: int = 3,
@@ -1133,6 +1134,8 @@ def tokenize_adata_in_memory(
     if use_hvg and adata.n_vars > n_hvg:
         tmp = adata.copy()
         sc.pp.normalize_total(tmp, target_sum=1e4)
+        if hvg_log1p:  # legacy option for older datasets
+            sc.pp.log1p(tmp)
         sc.pp.highly_variable_genes(tmp, n_top_genes=n_hvg, flavor="seurat_v3")
         adata = adata[:, tmp.var.highly_variable].copy()
 
