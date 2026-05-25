@@ -72,6 +72,7 @@ mean_var_column_by_assay = {
     "starmap": ("mean_starmap",),
     "slideseqv2": ("mean_slideseqv2",),
     "stereo": ("mean_stereo",),
+    "snrna": ("mean_stereo",),
 }
 
 

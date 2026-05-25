@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import warnings
 import seaborn as sns
 from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import classification_report, adjusted_rand_score
 from scipy.sparse import csr_matrix
 from anndata import AnnData
 
@@ -134,6 +135,27 @@ def run_label_transfer(X_ref: np.ndarray, y_ref: np.ndarray, X_query: np.ndarray
         return run_logreg_classifier(X_ref, y_ref, X_query, max_iter=kwargs.get("max_iter", 200), C=kwargs.get("C", 1.0))
     else:
         raise ValueError(f"Unsupported method: {method}")
+
+
+def build_marker_dict(csv_path, class_col="SubClass", cutoff=1.0, top_n=None):
+    """
+    Build marker dict {class: {gene: logFC}} directly from marker CSV.
+    """
+    df_marker = pd.read_csv(csv_path, index_col=0)
+    df_marker = df_marker[df_marker["avg_log2FC"] > cutoff]
+
+    marker_dict = {}
+    for cls, df_cls in df_marker.groupby(class_col):
+        if top_n is not None:
+            df_cls = df_cls.sort_values("avg_log2FC", ascending=False).head(top_n)
+        marker_dict[cls] = dict(zip(df_cls["gene"], df_cls["avg_log2FC"]))
+    counts = {cls: len(genes) for cls, genes in marker_dict.items()}
+    all_counts = list(counts.values())
+    print(
+        f"[INFO] Marker gene stats: min={min(all_counts)}, max={max(all_counts)}, mean={np.mean(all_counts):.1f}, total_classes={len(all_counts)}")
+
+    assert len(marker_dict) > 0, f"[ERROR] No valid markers found in {csv_path}"
+    return marker_dict
 
 def manual_spatial_smooth(
     adata: AnnData,
@@ -972,3 +994,216 @@ def plot_label_proportion_comparison(
     print(f"[INFO] Saved label proportion table: {csv_path}")
 
     return csv_path
+
+
+def dev_sum(df: pd.DataFrame):
+    """
+    Normalize a DataFrame by columns, dividing each value by the sum of its column.
+    """
+    v = df.values.copy()  # Use a copy to avoid modifying the original data
+    col_sums = np.sum(v, axis=0)
+    # Prevent division by zero
+    v[:, col_sums > 0] /= col_sums[col_sums > 0]
+    return pd.DataFrame(v, index=df.index, columns=df.columns)
+
+def run_prediction_pipeline(
+        adata: sc.AnnData,
+        pretrained_model: pd.DataFrame,
+        marker_gene_dict: dict,
+        output_folder: str,
+        true_label_col: str = 'SubClass',
+        study_col: str = 'slice',
+        layer_col: str = 'layer',
+        pred_col_name: str = 'subclass_pre'
+):
+    """
+    Run the full MetaNeighbor-based evaluation and visualization pipeline.
+
+    Args:
+        adata (sc.AnnData): Input AnnData object with gene expression and metadata.
+        pretrained_model (pd.DataFrame): Pretrained MetaNeighbor reference model_raw.
+        marker_gene_dict (dict): Marker gene dictionary for dotplot visualization.
+        output_folder (str): Directory for saving outputs.
+        true_label_col (str): Column name of true labels in adata.obs.
+        study_col (str): Column name of study/sample in adata.obs.
+        layer_col (str): Column name for spatial layer information in adata.obs.
+        pred_col_name (str): Column name for predicted labels to be stored in adata.obs.
+    """
+    # --- 0. Preparation ---
+    print(f"--- Pipeline started. Output will be saved to: {output_folder} ---")
+    os.makedirs(output_folder, exist_ok=True)
+    adata = adata.copy()
+
+    # Ensure correct datatypes
+    adata.obs[true_label_col] = adata.obs[true_label_col].astype("category")
+    adata.obs[study_col] = adata.obs[study_col].astype("category")
+    if layer_col in adata.obs:
+        adata.obs[layer_col] = adata.obs[layer_col].astype("category")
+    if "genenames" in adata.var.columns:
+        adata.var_names = adata.var["genenames"].astype(str)
+        adata.var_names_make_unique()
+    elif "gene_symbol" in adata.var.columns:
+        adata.var_names = adata.var["gene_symbol"].astype(str)
+        adata.var_names_make_unique()
+
+    # Remove duplicated gene symbols
+    adata = adata[:, ~adata.var_names.duplicated()].copy()
+
+    # --- 1. Run MetaNeighborUS ---
+    print("--- 1. Running MetaNeighborUS to get predictions ---")
+    import pymn
+    pymn.MetaNeighborUS(
+        adata,
+        study_col=study_col,
+        ct_col=pred_col_name,  # use predicted labels as input for AUROC calculation
+        trained_model=pretrained_model,
+        one_vs_best=True
+    )
+
+    auroc_results = adata.uns['MetaNeighborUS_1v1']
+    print(f"Predictions stored in 'adata.obs[{pred_col_name}]'.")
+
+    # AUROC heatmap
+    pymn.plotMetaNeighborUS_pretrained(
+        adata, cmap="coolwarm", mn_key='MetaNeighborUS_1v1',
+        figsize=(10, 10), show=False
+    )
+    plt.savefig(os.path.join(output_folder, '0_MetaNeighborUS_AUROC_heatmap.png'),
+                bbox_inches='tight', dpi=300)
+    plt.close()
+
+    # --- 2. Evaluation & Visualization ---
+    print("\n--- 2. Starting evaluation and visualization ---")
+
+    # a. Marker gene dotplot
+    print("Saving marker gene dotplot...")
+    # check if all marker genes exist in adata.var_names
+    all_genes = {g for genes in marker_gene_dict.values() for g in genes}
+    missing = all_genes - set(adata.var_names)
+
+    if missing:
+        print(f"[WARN] {len(missing)} marker genes not found in adata, filtering...")
+        marker_gene_dict = {
+            ct: [g for g in genes if g in adata.var_names]
+            for ct, genes in marker_gene_dict.items()
+        }
+        marker_gene_dict = {ct: genes for ct, genes in marker_gene_dict.items() if genes}
+
+    sc.pl.dotplot(adata, marker_gene_dict, groupby=pred_col_name, use_raw=False, show=False)
+    plt.savefig(os.path.join(output_folder, '1a_dotplot_predicted_labels.png'), bbox_inches='tight')
+    plt.close()
+    sc.pl.dotplot(adata, marker_gene_dict, groupby=true_label_col, use_raw=False, show=False)
+    plt.savefig(os.path.join(output_folder, '1b_dotplot_true_labels.png'), bbox_inches='tight')
+    plt.close()
+
+    # b. Distribution across spatial layers
+    if layer_col in adata.obs:
+        print("Analyzing distribution in layers...")
+        layer_dist = pd.crosstab(adata.obs[layer_col], adata.obs[pred_col_name])
+        layer_dist_norm_row = layer_dist.div(layer_dist.sum(axis=1), axis=0)
+        dfwide = dev_sum(layer_dist_norm_row)
+        plt.figure(figsize=(12, 4))
+        sns.heatmap(dfwide, annot=False, cmap="viridis", linewidths=0.1)
+        plt.title('Distribution of Predicted Cell Types across Layers')
+        plt.savefig(os.path.join(output_folder, '2_layer_distribution_heatmap.png'),
+                    bbox_inches='tight')
+        plt.close()
+
+    # c. Cell type proportions
+    print("Comparing cell type proportions...")
+    true_props = adata.obs[true_label_col].value_counts(normalize=True).sort_index()
+    pred_props = adata.obs[pred_col_name].value_counts(normalize=True).sort_index()
+    props_df = pd.DataFrame({'True': true_props, 'Predicted': pred_props})
+    props_df.plot(kind='bar', figsize=(12, 7), position=0.5, width=0.4)
+    plt.title('Proportion of Cell Types: True vs. Predicted')
+    plt.ylabel('Proportion')
+    plt.xticks(rotation=45, ha='right')
+    plt.savefig(os.path.join(output_folder, '3_proportion_comparison.png'), bbox_inches='tight')
+    plt.close()
+
+    # d. Confusion matrix
+    print("Generating confusion matrices...")
+    cm_recall = pd.crosstab(
+        adata.obs[true_label_col], adata.obs[pred_col_name], normalize='index'
+    )
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm_recall, annot=True, fmt='.2f', cmap='viridis')
+
+    plt.title('Confusion Matrix (Normalized by True Label -> Recall)')
+    plt.savefig(os.path.join(output_folder, '4a_confusion_matrix_recall.png'), bbox_inches='tight')
+    plt.close()
+
+    # e. Spatial plots
+    print("Generating spatial plots...")
+
+    # --- Unified palette (align plot_spatial_comparison) ---
+    predefined_palette = {
+        "L2": "#1f77b4", "RELN": "#4292c6", "VIP": "#6baed6", "VIP_RELN": "#9ecae1",
+        "L2/3": "#2ca02c", "L2/3/4": "#4caf50", "L3/4/5": "#66bb6a", "SST": "#81c784", "LAMP5": "#a5d6a7",
+        "L3/4": "#9467bd", "L4": "purple", "PVALB": "#b39ddb", "PV_CHC": "#c0a5e0",
+        "L4/5": "#ff7f0e", "L4/5/6": "#ffa726", "L5/6": "#ffcc80",
+        "ASC": "#e31a1c", "VLMC": "#ef5350",
+        "L6": "#d4ac0d", "OLG": "#ffd54f",
+        "MG": "#7f7f7f", "OPC": "#a0a0a0", "EC": "#f46d43",
+        "unassigned": "#d0d0d0",  # 浅灰
+    }
+
+    def make_palette(categories, predefined):
+        import scanpy as sc
+        base_colors = sc.pl.palettes.default_102
+        palette = {}
+        for cat in categories:
+            if cat in predefined:
+                palette[cat] = predefined[cat]
+        unused_colors = [c for c in base_colors if c not in palette.values()]
+        i = 0
+        for cat in categories:
+            if cat not in palette:
+                palette[cat] = unused_colors[i % len(unused_colors)]
+                i += 1
+        return palette
+
+    # unified palette for both true and predicted labels
+    all_categories = sorted(set(adata.obs[true_label_col].dropna().unique()) |
+                            set(adata.obs[pred_col_name].dropna().unique()))
+    palette_map = make_palette(all_categories, predefined_palette)
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+
+    sc.pl.spatial(
+        adata,
+        color=true_label_col,
+        spot_size=100,
+        palette=[palette_map[c] for c in adata.obs[true_label_col].cat.categories],
+        ax=axes[0],
+        show=False
+    )
+    axes[0].set_title(f'True Labels ({true_label_col})')
+
+    sc.pl.spatial(
+        adata,
+        color=pred_col_name,
+        spot_size=100,
+        palette=[palette_map[c] for c in adata.obs[pred_col_name].cat.categories],
+        ax=axes[1],
+        show=False
+    )
+    axes[1].set_title(f'Predicted Labels ({pred_col_name})')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, '5_spatial_comparison.png'),
+                bbox_inches='tight', dpi=300)
+    plt.close()
+
+    # f. Classification metrics
+    print("Calculating classification metrics...")
+    report = classification_report(adata.obs[true_label_col], adata.obs[pred_col_name], output_dict=True)
+    report_df = pd.DataFrame(report).transpose()
+    report_df.to_csv(os.path.join(output_folder, '6a_classification_report.csv'))
+
+    ari_score = adjusted_rand_score(adata.obs[true_label_col], adata.obs[pred_col_name])
+    with open(os.path.join(output_folder, '6b_ari_score.txt'), 'w') as f:
+        f.write(f"Adjusted Rand Index (ARI): {ari_score:.4f}\n")
+
+    print(f"\n--- Pipeline finished successfully. All outputs are in {output_folder} ---")
+    return adata

@@ -1888,4 +1888,20 @@ def train_stage2_on_multi_adata(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    return current_stage2_ckpt_path
+    final_stage2_ckpt_path = current_stage2_ckpt_path
+
+    if save_model and current_stage2_ckpt_path is not None:
+        if not os.path.exists(current_stage2_ckpt_path):
+            raise FileNotFoundError(
+                f"Current Stage2 checkpoint not found after training: {current_stage2_ckpt_path}"
+            )
+
+        final_stage2_ckpt_path = os.path.join(
+            ckpt_dir,
+            f"{output_prefix}_final.pt"
+        )
+
+        shutil.copy2(current_stage2_ckpt_path, final_stage2_ckpt_path)
+        print(f"[Stage2 final] Copied completed checkpoint to: {final_stage2_ckpt_path}")
+
+    return final_stage2_ckpt_path
