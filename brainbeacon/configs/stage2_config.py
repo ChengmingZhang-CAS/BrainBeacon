@@ -14,6 +14,7 @@ stage2_config = {
   "model_dropout": 0.2,
   "use_hidden_pe": True,
   "pe_type": 'sin',
+  "pe_weight": 1.0,
   "mask_type": 'hidden',
   "mask_node_rate": 0.75,
   "mask_feature_rate": 0.25,

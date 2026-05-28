@@ -16,7 +16,7 @@ class OmicsFormer(nn.Module):
                  activation='gelu', norm='layernorm', enc_head=8, mask_node_rate=0.5,
                  mask_feature_rate=0.8, drop_node_rate=0., max_batch_size=2000, sampling_mode="spatial",
                  center_ratio=0.5, knn_k=10, cat_dim=None, conti_dim=None,
-                 pe_type='fourier', cat_pe=True, use_hidden_pe=True,
+                 pe_type='fourier', cat_pe=True, use_hidden_pe=True, pe_weight=1.0,
                  gene_emb=None, latent_mod='vae', w_li=1., w_en=1., w_ce=1.,
                  head_type=None, dsbn=False, ecs=False, dar=False, input_covariate=False,
                  num_clusters=16, dae=True, lamda=0.5, mask_beta=False, **kwargs):
@@ -35,6 +35,7 @@ class OmicsFormer(nn.Module):
         else:
             self.linear_bb = nn.Identity()
         self.use_hidden_pe = use_hidden_pe and (pe_type is not None)
+        self.pe_weight = pe_weight
 
         self.gene_set = set(gene_list)
         self.mask_type = mask_type
@@ -120,7 +121,7 @@ class OmicsFormer(nn.Module):
                 if self.embedder.cat_pe:
                     raise ValueError("cat_pe=True is not supported in hidden branch")
                 else:
-                    bb_emb = bb_emb + pe
+                    bb_emb = bb_emb + self.pe_weight * pe
 
             # bb_emb = bb_emb.to(self.bb_norm.weight.dtype)  # fix bug: expected scalar type Double but found Float
             bb_emb = self.bb_norm(bb_emb)

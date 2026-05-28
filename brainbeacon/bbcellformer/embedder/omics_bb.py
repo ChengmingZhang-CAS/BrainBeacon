@@ -47,7 +47,8 @@ class OmicsEmbedder(nn.Module):
 
 
 class OmicsEmbeddingLayer(nn.Module):
-    def __init__(self, gene_list, num_hidden, norm, activation='gelu', dropout=0.3, pe_type=None, cat_pe=True, gene_emb=None, inject_covariate=False, batch_num=None):
+    def __init__(self, gene_list, num_hidden, norm, activation='gelu', dropout=0.3, pe_type=None,
+                 cat_pe=True, gene_emb=None, inject_covariate=False, batch_num=None):
         super().__init__()
         self.pe_type = pe_type
         self.cat_pe = cat_pe

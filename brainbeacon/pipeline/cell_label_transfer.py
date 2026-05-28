@@ -212,158 +212,84 @@ def manual_spatial_smooth(
     else:
         return smoothed_X
 
-def preprocess_one_adata(
-    adata: AnnData,
-    info: Dict,
-    n_hvg: int,
-    target_species: str = "macaque",
-    convert_id: bool = True,
-    smooth_st: bool = True,
-    smooth_k: int = 25,
-    add_genes: Optional[List[str]] = None,
-    hvg_flavor: str = "seurat",
-    homology_df: Optional[pd.DataFrame] = None
+
+# helper: make HVG mask and merge with add_genes BEFORE slicing
+def apply_hvg_with_add(
+        adata_full: AnnData,
+        n_top: int,
+        add_genes_list: Optional[List[str]],
+        prefer_target_gene: bool,
+        hvg_flavor: str = "seurat_v3",
 ) -> AnnData:
-    """Preprocess a single AnnData with optional smoothing, ID conversion, HVG, and forcing extra genes into HVG set."""
-    print(f"[INFO] Preprocessing {info['data_name']}...")
+    tmp = adata_full.copy()
+    if hvg_flavor == "seurat_v3":
+        # seurat_v3 expects raw counts / count-like input
+        sc.pp.highly_variable_genes(tmp, n_top_genes=n_top, flavor="seurat_v3")
 
-    # 1) ensure gene name column
-    if "genenames" not in adata.var.columns:
-        adata.var["genenames"] = adata.var['gene_symbol']
-
-    # 2) spatial coords
-    if "spatial" in adata.obsm:
-        adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=float)
-        print(f"[INFO] Spatial coordinates already exist in {info['data_name']}.")
-    elif info["assay"] == "snrna":
-        print(f"[INFO] {info['data_name']} is snRNA-seq. Skip spatial coordinate setup.")
+    elif hvg_flavor == "seurat":
+        # seurat expects log-normalized input
+        sc.pp.normalize_total(tmp, target_sum=1e4)
+        sc.pp.log1p(tmp)
+        sc.pp.highly_variable_genes(tmp, n_top_genes=n_top, flavor="seurat")
     else:
-        if "rx" in adata.obs.columns and "ry" in adata.obs.columns:
-            adata.obsm["spatial"] = adata.obs[["rx", "ry"]].values.astype(float)
-            print(f"[INFO] Spatial coordinates added from rx/ry for {info['data_name']}.")
-        elif "x" in adata.obs.columns and "y" in adata.obs.columns:
-            adata.obsm["spatial"] = adata.obs[["x", "y"]].values.astype(float)
-            print(f"[INFO] Spatial coordinates added from x/y for {info['data_name']}.")
-        else:
-            warnings.warn(f"Spatial coordinates not found for {info['data_name']}. Skipping smoothing.")
+        raise ValueError(f"Unsupported hvg_flavor: {hvg_flavor}")
 
-    if "spatial" in adata.obsm:
-        adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=float)
-        valid_idx = ~np.isnan(adata.obsm["spatial"]).any(axis=1)
-        adata = adata[valid_idx].copy()
+    hvg_mask = tmp.var.highly_variable.copy()
 
-    # 3) optional spatial smoothing (before HVG)
-    if smooth_st and info["assay"] != "snrna" and "spatial" in adata.obsm:
-        manual_spatial_smooth(adata, layer_key='smooth', n_neighbors=smooth_k)
-        adata.X = adata.layers["smooth"]
+    if add_genes_list:
+        gene_col = "target_gene" if (prefer_target_gene and "target_gene" in tmp.var.columns) else "genenames"
+        extra_mask = tmp.var[gene_col].isin(add_genes_list).fillna(False)
 
-    # 4) light QC
-    min_gene_threshold = 0.01
-    dynamic_min_genes = min(200, int(adata.n_vars * min_gene_threshold))
-    dynamic_min_genes = max(dynamic_min_genes, 1)
-    print(f"[INFO] Using min_genes={dynamic_min_genes} (based on {adata.n_vars} genes)")
-    sc.pp.filter_cells(adata, min_genes=dynamic_min_genes)
-    sc.pp.filter_genes(adata, min_cells=3)
-
-    # helper: make HVG mask and merge with add_genes BEFORE slicing
-    def _apply_hvg_with_add(
-            adata_full: AnnData,
-            n_top: int,
-            add_genes_list: Optional[List[str]],
-            prefer_target_gene: bool,
-            hvg_flavor: str = "seurat_v3",
-    ) -> AnnData:
-        tmp = adata_full.copy()
-        if hvg_flavor == "seurat_v3":
-            # seurat_v3 expects raw counts / count-like input
-            sc.pp.highly_variable_genes(tmp, n_top_genes=n_top, flavor="seurat_v3")
-
-        elif hvg_flavor == "seurat":
-            # seurat expects log-normalized input
-            sc.pp.normalize_total(tmp, target_sum=1e4)
-            sc.pp.log1p(tmp)
-            sc.pp.highly_variable_genes(tmp, n_top_genes=n_top, flavor="seurat")
-        else:
-            raise ValueError(f"Unsupported hvg_flavor: {hvg_flavor}")
-
-        hvg_mask = tmp.var.highly_variable.copy()
-
-        if add_genes_list:
-            gene_col = "target_gene" if (prefer_target_gene and "target_gene" in tmp.var.columns) else "genenames"
-            extra_mask = tmp.var[gene_col].isin(add_genes_list).fillna(False)
-
-            if extra_mask.any():
-                newly_added = int((extra_mask & ~hvg_mask).sum())
-                total_hits = int(extra_mask.sum())
-                keep_mask = hvg_mask | extra_mask
-                print(
-                    f"[INFO] Forcing {newly_added} newly added genes "
-                    f"(total hits={total_hits}, col={gene_col})"
-                )
-            else:
-                keep_mask = hvg_mask
-                print("[WARN] None of the add_genes were found in this namespace; HVG unchanged.")
+        if extra_mask.any():
+            newly_added = int((extra_mask & ~hvg_mask).sum())
+            total_hits = int(extra_mask.sum())
+            keep_mask = hvg_mask | extra_mask
+            print(
+                f"[INFO] Forcing {newly_added} newly added genes "
+                f"(total hits={total_hits}, col={gene_col})"
+            )
         else:
             keep_mask = hvg_mask
-
-        return adata_full[:, keep_mask].copy()
-
-    # 5) same-species (or no-conversion) branch
-    if info["species"] == target_species or not convert_id:
-        # note: if species != target and convert_id=False, namespaces may differ -> add_genes may not match
-        if info["species"] != target_species and not convert_id and add_genes:
-            warnings.warn("[WARN] convert_id=False and species differ from target; add_genes may not match current gene namespace.")
-
-        if not convert_id:
-            # Ensure Ensembl IDs for BrainBeacon input
-            if not adata.var_names.str.startswith("ENS").all():
-                print(f"[WARN] {info['data_name']} gene IDs not in Ensembl format, running ensure_ensembl_ids()...")
-                adata = ensure_ensembl_ids(adata, species=info["species"])
-
-        # dedup before HVG
-        # adata = adata[:, ~adata.var["genenames"].duplicated()].copy()
-        adata.var_names_make_unique()
-        adata = _apply_hvg_with_add(adata, n_hvg, add_genes, hvg_flavor=hvg_flavor, prefer_target_gene=False)
-        adata.obs_names_make_unique()
-        return adata
-
-    # 6) cross-species branch: map homologs first, then HVG + add_genes in target namespace
-    adata = map_homologs(
-        adata, homology_df,
-        source_species=info['species'], target_species=target_species,
-        source_gene_col="genenames"
-    )
-    species_list = ["macaque", "marmoset", "human", "mouse"]
-    if target_species in species_list:
-        adata = ensure_ensembl_ids(adata, species=target_species)
+            print("[WARN] None of the add_genes were found in this namespace; HVG unchanged.")
     else:
-        warnings.warn(f"Unknown species '{target_species}'. Skipping Ensembl ID conversion.")
+        keep_mask = hvg_mask
 
-    # dedup before HVG
-    adata = adata[:, ~adata.var["genenames"].duplicated()].copy()
-    adata = _apply_hvg_with_add(adata, n_hvg, add_genes, hvg_flavor=hvg_flavor, prefer_target_gene=True)
-    adata.obs_names_make_unique()
-    return adata
+    return adata_full[:, keep_mask].copy()
 
-def build_marker_dict_from_adata(
+def flatten_prior_marker_genes(prior_marker_dict):
+    """Flatten all prior marker genes for HVG forcing."""
+    if prior_marker_dict is None:
+        return []
+
+    genes = []
+    for marker_genes in prior_marker_dict.values():
+        if isinstance(marker_genes, dict):
+            genes.extend(marker_genes.keys())
+        else:
+            genes.extend(marker_genes)
+
+    return sorted(set(map(str, genes)))
+
+
+def build_marker_df_from_adata(
     adata: sc.AnnData,
     label_col: str,
     cutoff: float = 0.5,
     top_n: int = 50,
     gene_col: str = "genenames",
     method: str = "wilcoxon",
-) -> dict:
+    prior_marker_dict: Optional[dict] = None,
+    global_marker_key: str = "global",
+) -> pd.DataFrame:
     """
-    Build marker dict directly from source AnnData.
+    Build marker dataframe from AnnData before HVG selection.
 
-    Return format:
-        {
-            label_name: {
-                gene_name: marker_weight,
-                ...
-            },
-            ...
-        }
+    Auto markers are selected by DE ranking.
+    Class-specific prior markers are merged using real positive logFC.
+    Global prior markers are skipped here and only used for HVG forcing.
+
+    Returns a long-format dataframe with columns:
+        class, gene, scores, logfoldchange, pvals, pvals_adj, rank, weight, source
     """
     if label_col not in adata.obs.columns:
         raise KeyError(f"{label_col} not found in adata.obs.")
@@ -387,38 +313,260 @@ def build_marker_dict_from_adata(
         groupby=label_col,
         method=method,
         use_raw=False,
+        n_genes=tmp.n_vars,
     )
 
-    df_marker = sc.get.rank_genes_groups_df(tmp, group=None)
-    df_marker = df_marker[df_marker["logfoldchanges"] > cutoff].copy()
+    df_all = sc.get.rank_genes_groups_df(tmp, group=None).copy()
+    df_all = df_all.rename(
+        columns={
+            "group": "class",
+            "names": "gene",
+            "logfoldchanges": "logfoldchange",
+        }
+    )
+    df_all["class"] = df_all["class"].astype(str)
+    df_all["gene"] = df_all["gene"].astype(str)
 
-    marker_dict = {}
-    for cls, df_cls in df_marker.groupby("group"):
-        df_cls = df_cls.sort_values("scores", ascending=False).head(top_n)
-        if len(df_cls) == 0:
-            continue
+    df_marker = df_all[df_all["logfoldchange"] > cutoff].copy()
+    df_marker = df_marker.sort_values(["class", "scores"], ascending=[True, False])
+    df_marker["rank"] = df_marker.groupby("class").cumcount() + 1
 
-        marker_dict[str(cls)] = dict(
-            zip(
-                df_cls["names"].astype(str),
-                df_cls["logfoldchanges"].astype(float),
+    if top_n is not None:
+        df_marker = df_marker[df_marker["rank"] <= top_n].copy()
+
+    df_marker["source"] = "auto"
+
+    if prior_marker_dict is not None:
+        prior_rows = []
+        skipped = 0
+
+        for cls, marker_genes in prior_marker_dict.items():
+            cls = str(cls)
+            if cls == global_marker_key:
+                continue
+
+            genes = list(marker_genes.keys()) if isinstance(marker_genes, dict) else list(marker_genes)
+
+            for gene in genes:
+                gene = str(gene)
+                matched = df_all[(df_all["class"] == cls) & (df_all["gene"] == gene)]
+
+                if len(matched) == 0:
+                    skipped += 1
+                    continue
+
+                row = matched.iloc[0].copy()
+                logfc = float(row["logfoldchange"])
+
+                if not np.isfinite(logfc) or logfc <= 0:
+                    skipped += 1
+                    continue
+
+                row["source"] = "prior"
+                prior_rows.append(row)
+
+        if prior_rows:
+            df_prior = pd.DataFrame(prior_rows)
+            df_marker = pd.concat([df_marker, df_prior], axis=0, ignore_index=True)
+            df_marker = (
+                df_marker
+                .sort_values(["class", "source", "logfoldchange"], ascending=[True, True, False])
+                .drop_duplicates(subset=["class", "gene"], keep="first")
+                .copy()
             )
-        )
 
-    if len(marker_dict) == 0:
+        print(f"[INFO] Prior markers merged into marker_df: {len(prior_rows)}")
+        if skipped > 0:
+            print(f"[WARN] Prior markers skipped from marker_df: {skipped}")
+
+    df_marker["weight"] = df_marker["logfoldchange"].astype(float).clip(lower=cutoff, upper=5.0)
+    df_marker = df_marker.sort_values(["class", "source", "weight"], ascending=[True, True, False]).copy()
+    df_marker["rank"] = df_marker.groupby("class").cumcount() + 1
+    df_marker = df_marker.reset_index(drop=True)
+
+    counts = df_marker.groupby("class").size()
+    if len(counts) == 0:
         raise ValueError(
             "No marker genes were found. "
             "Try lowering marker_cutoff or checking label_col."
         )
 
-    counts = [len(v) for v in marker_dict.values()]
     print(
-        f"[INFO] Marker gene stats from AnnData: "
-        f"min={min(counts)}, max={max(counts)}, "
-        f"mean={np.mean(counts):.1f}, total_classes={len(counts)}"
+        f"[INFO] Marker gene stats: "
+        f"min={counts.min()}, max={counts.max()}, "
+        f"mean={counts.mean():.1f}, total_classes={len(counts)}"
     )
 
-    return marker_dict
+    print(f"[INFO] Marker source counts: {df_marker['source'].value_counts().to_dict()}")
+
+    return df_marker
+
+
+def preprocess_one_adata(
+    adata: AnnData,
+    info: Dict,
+    n_hvg: int,
+    target_species: str = "macaque",
+    convert_id: bool = True,
+    smooth_st: bool = True,
+    smooth_k: int = 25,
+    use_marker: bool = False,
+    add_marker_genes: bool = False,
+    marker_label_col: Optional[str] = None,
+    marker_topn: int = 50,
+    marker_cutoff: float = 0.5,
+    marker_gene_col: str = "genenames",
+    add_genes: Optional[List[str]] = None,
+    hvg_flavor: str = "seurat",
+    homology_df: Optional[pd.DataFrame] = None,
+    prior_marker_dict: Optional[dict] = None,
+    global_marker_key: str = "global",
+) -> AnnData:
+    """Preprocess a single AnnData with optional smoothing, ID conversion, HVG, and forcing extra genes into HVG set."""
+    print(f"[INFO] Preprocessing {info['data_name']}...")
+
+    # 1) ensure gene name column
+    if "genenames" not in adata.var.columns:
+        adata.var["genenames"] = adata.var["gene_symbol"]
+
+    # 2) spatial coords
+    if "spatial" in adata.obsm:
+        adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=float)
+        print(f"[INFO] Spatial coordinates already exist in {info['data_name']}.")
+    elif info["assay"] == "snrna":
+        print(f"[INFO] {info['data_name']} is snRNA-seq. Skip spatial coordinate setup.")
+    else:
+        if "rx" in adata.obs.columns and "ry" in adata.obs.columns:
+            adata.obsm["spatial"] = adata.obs[["rx", "ry"]].values.astype(float)
+            print(f"[INFO] Spatial coordinates added from rx/ry for {info['data_name']}.")
+        elif "x" in adata.obs.columns and "y" in adata.obs.columns:
+            adata.obsm["spatial"] = adata.obs[["x", "y"]].values.astype(float)
+            print(f"[INFO] Spatial coordinates added from x/y for {info['data_name']}.")
+        else:
+            warnings.warn(f"Spatial coordinates not found for {info['data_name']}. Skipping smoothing.")
+
+    if "spatial" in adata.obsm:
+        adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=float)
+        valid_idx = ~np.isnan(adata.obsm["spatial"]).any(axis=1)
+        adata = adata[valid_idx].copy()
+
+    # 3) optional spatial smoothing before HVG
+    if smooth_st and info["assay"] != "snrna" and "spatial" in adata.obsm:
+        manual_spatial_smooth(adata, layer_key="smooth", n_neighbors=smooth_k)
+        adata.X = adata.layers["smooth"]
+
+    # Light QC
+    min_gene_threshold = 0.01
+    dynamic_min_genes = min(200, int(adata.n_vars * min_gene_threshold))
+    dynamic_min_genes = max(dynamic_min_genes, 1)
+    print(f"[INFO] Using min_genes={dynamic_min_genes} (based on {adata.n_vars} genes)")
+    sc.pp.filter_cells(adata, min_genes=dynamic_min_genes)
+    sc.pp.filter_genes(adata, min_cells=3)
+
+    marker_genes = []
+
+    # 4) optional auto marker calculation before HVG
+    if use_marker:
+        if marker_label_col is None:
+            raise ValueError("marker_label_col must be provided when use_marker=True.")
+
+        # Prior markers are merged into marker_df only when add_marker_genes=True.
+        marker_prior_dict = prior_marker_dict if add_marker_genes else None
+
+        marker_df = build_marker_df_from_adata(
+            adata,
+            label_col=marker_label_col,
+            cutoff=marker_cutoff,
+            top_n=marker_topn,
+            gene_col=marker_gene_col,
+            prior_marker_dict=marker_prior_dict,
+            global_marker_key=global_marker_key,
+        )
+        adata.uns["marker_df"] = marker_df
+
+        # marker_df genes are sampling marker genes and should be kept once computed.
+        marker_genes = marker_df["gene"].astype(str).unique().tolist()
+        if add_genes is None:
+            add_genes = marker_genes
+        else:
+            add_genes = sorted(set(map(str, add_genes)) | set(marker_genes))
+
+        print(f"[INFO] Added marker_df genes for HVG forcing: {len(marker_genes)}")
+
+    # 5) optional prior marker genes forcing into HVG
+    if add_marker_genes:
+        prior_genes = flatten_prior_marker_genes(prior_marker_dict)
+
+        if len(prior_genes) > 0:
+            if add_genes is None:
+                add_genes = prior_genes
+            else:
+                add_genes = sorted(set(map(str, add_genes)) | set(prior_genes))
+
+            print(f"[INFO] Added prior marker genes for HVG forcing: {len(prior_genes)}")
+        else:
+            print("[INFO] add_marker_genes=True, but no prior marker genes were available for HVG forcing.")
+
+    # 6) same-species or no-conversion branch
+    if info["species"] == target_species or not convert_id:
+        if info["species"] != target_species and not convert_id and add_genes:
+            warnings.warn("[WARN] convert_id=False and species differ from target; add_genes may not match current gene namespace.")
+
+        if not convert_id:
+            # Ensure Ensembl IDs for BrainBeacon input
+            if not adata.var_names.str.startswith("ENS").all():
+                print(f"[WARN] {info['data_name']} gene IDs not in Ensembl format, running ensure_ensembl_ids()...")
+                adata = ensure_ensembl_ids(adata, species=info["species"])
+
+        adata.var_names_make_unique()
+        adata = apply_hvg_with_add(
+            adata,
+            n_hvg,
+            add_genes,
+            hvg_flavor=hvg_flavor,
+            prefer_target_gene=False,
+        )
+        adata.obs_names_make_unique()
+        return adata
+
+    # 7) cross-species branch: map homologs first, then HVG + add_genes in target namespace
+    adata = map_homologs(
+        adata,
+        homology_df,
+        source_species=info["species"],
+        target_species=target_species,
+        source_gene_col="genenames",
+    )
+
+    species_list = ["macaque", "marmoset", "human", "mouse"]
+    if target_species in species_list:
+        adata = ensure_ensembl_ids(adata, species=target_species)
+    else:
+        warnings.warn(f"Unknown species '{target_species}'. Skipping Ensembl ID conversion.")
+
+    adata = adata[:, ~adata.var["genenames"].duplicated()].copy()
+    adata = apply_hvg_with_add(
+        adata,
+        n_hvg,
+        add_genes,
+        hvg_flavor=hvg_flavor,
+        prefer_target_gene=True,
+    )
+    adata.obs_names_make_unique()
+    return adata
+
+
+def marker_df_to_dict(marker_df, class_col="class", gene_col="gene", weight_col="weight"):
+    if marker_df is None or marker_df.empty:
+        return None
+    required_cols = {class_col, gene_col, weight_col}
+    missing_cols = required_cols - set(marker_df.columns)
+    if missing_cols:
+        raise KeyError(f"marker_df missing required columns: {missing_cols}")
+    return {
+        str(cls): dict(zip(df_cls[gene_col].astype(str), df_cls[weight_col].astype(float)))
+        for cls, df_cls in marker_df.groupby(class_col)
+    }
 
 def filter_by_shared_homo_groups(
     adata_source: sc.AnnData,
@@ -889,7 +1037,7 @@ def plot_spatial_comparison(
             normalize="index"
         )
         plt.figure(figsize=(10, 8))
-        sns.heatmap(cm_recall, annot=True, fmt=".2f", cmap="viridis")
+        sns.heatmap(cm_recall, annot=False, linewidths=0.2, cmap="viridis")
         plt.title(f"Confusion Matrix\n(True={true_label_col}, Pred={pred_label_col})")
         cm_path = output_path.replace("spatial.png", "confusion.png")
         plt.savefig(cm_path, bbox_inches="tight", dpi=300)
