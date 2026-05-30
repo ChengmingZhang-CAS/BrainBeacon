@@ -568,81 +568,127 @@ def marker_df_to_dict(marker_df, class_col="class", gene_col="gene", weight_col=
         for cls, df_cls in marker_df.groupby(class_col)
     }
 
-def filter_by_shared_homo_groups(
-    adata_source: sc.AnnData,
-    adata_target: sc.AnnData,
-    gene_dict_path: str,
-    homo_col: str = "homo_connect_id",
+def align_ref_query_genes(
+    adata_ref,
+    adata_query,
+    mode="gene",
+    gene_dict=None,
+    homo_col="homo_connect_id",
 ):
     """
-    Keep genes whose homo group exists in both source and target.
+    Align reference and query genes by direct gene intersection or shared homologous groups.
 
-    Assumptions:
-        1. adata_source.var_names are Ensembl IDs.
-        2. adata_target.var_names are Ensembl IDs.
-        3. gene_dict.var_names are Ensembl IDs.
-        4. gene_dict.var[homo_col] stores homology group IDs.
+    Parameters
+    ----------
+    adata_ref : AnnData
+        Reference AnnData after preprocessing.
+    adata_query : AnnData
+        Query AnnData after preprocessing.
+    mode : str
+        "gene": direct gene intersection using var_names.
+        "homo": homo group intersection using gene_dict.var.index and gene_dict.var[homo_col].
+    gene_dict : AnnData, optional
+        Gene dictionary AnnData. Required when mode="homo".
+    homo_col : str
+        Column name in gene_dict.var for homologous group IDs.
 
-    Logic:
-        source genes -> homo groups
-        target genes -> homo groups
-        keep genes whose homo group appears in both source and target
+    Returns
+    -------
+    adata_ref : AnnData
+        Filtered reference AnnData.
+    adata_query : AnnData
+        Filtered query AnnData.
+    align_info : dict
+        Minimal alignment summary for debugging.
     """
-    gene_dict = sc.read_h5ad(gene_dict_path)
-    gvar = gene_dict.var.copy()
-    gvar.index = gvar.index.astype(str)
+    mode = str(mode).lower()
+    n_ref_before = adata_ref.n_vars
+    n_query_before = adata_query.n_vars
 
-    if homo_col not in gvar.columns:
-        raise KeyError(f"{homo_col} not found in gene_dict.var.")
+    if mode == "gene":
+        common_genes = adata_ref.var_names.intersection(adata_query.var_names)
 
-    # Ensembl ID -> homo group
-    gene_to_homo = gvar[homo_col].dropna().astype(str).to_dict()
+        align_info = {
+            "mode": "gene",
+            "n_ref_before": n_ref_before,
+            "n_query_before": n_query_before,
+            "n_common_genes": len(common_genes),
+            "n_ref_after": len(common_genes),
+            "n_query_after": len(common_genes),
+        }
 
-    source_genes = adata_source.var_names.astype(str)
-    target_genes = adata_target.var_names.astype(str)
+        print(
+            f"[INFO] Gene alignment mode=gene | "
+            f"ref {n_ref_before}->{len(common_genes)}, "
+            f"query {n_query_before}->{len(common_genes)}, "
+            f"common_genes={len(common_genes)}"
+        )
 
-    source_homo = np.array(
-        [gene_to_homo.get(gene, None) for gene in source_genes],
-        dtype=object,
-    )
-    target_homo = np.array(
-        [gene_to_homo.get(gene, None) for gene in target_genes],
-        dtype=object,
-    )
+        return adata_ref[:, common_genes].copy(), adata_query[:, common_genes].copy(), align_info
 
-    source_homo_set = {x for x in source_homo if x is not None}
-    target_homo_set = {x for x in target_homo if x is not None}
-    shared_homo = source_homo_set & target_homo_set
+    if mode == "homo":
+        if gene_dict is None:
+            raise ValueError("gene_dict is required when mode='homo'.")
+        if homo_col not in gene_dict.var.columns:
+            raise KeyError(f"'{homo_col}' not found in gene_dict.var.")
 
-    print(
-        f"[INFO] Homo-group mapping before filtering: "
-        f"source_mapped_genes={(source_homo != None).sum()}, "
-        f"target_mapped_genes={(target_homo != None).sum()}, "
-        f"source_homo_groups={len(source_homo_set)}, "
-        f"target_homo_groups={len(target_homo_set)}, "
-        f"shared_homo_groups={len(shared_homo)}"
-    )
+        gene_dict_var = gene_dict.var
 
-    if len(shared_homo) == 0:
-        raise ValueError("No shared homo groups found between source and target.")
+        # Strict mode: only use gene_dict.var.index as the gene ID key.
+        gene_to_homo = {
+            str(gene): homo
+            for gene, homo in gene_dict_var[homo_col].items()
+            if not pd.isna(homo)
+        }
 
-    keep_source = np.array([x in shared_homo for x in source_homo])
-    keep_target = np.array([x in shared_homo for x in target_homo])
+        ref_gene_to_homo = {
+            str(g): gene_to_homo[str(g)]
+            for g in adata_ref.var_names
+            if str(g) in gene_to_homo
+        }
 
-    adata_source = adata_source[:, keep_source].copy()
-    adata_target = adata_target[:, keep_target].copy()
+        query_gene_to_homo = {
+            str(g): gene_to_homo[str(g)]
+            for g in adata_query.var_names
+            if str(g) in gene_to_homo
+        }
 
-    adata_source.var[homo_col] = source_homo[keep_source]
-    adata_target.var[homo_col] = target_homo[keep_target]
+        common_homo = set(ref_gene_to_homo.values()).intersection(set(query_gene_to_homo.values()))
 
-    print(
-        f"[INFO] Homo-group gene filtering finished: "
-        f"source_genes={adata_source.n_vars}, "
-        f"target_genes={adata_target.n_vars}, "
-        f"shared_homo_groups={len(shared_homo)}"
-    )
+        ref_keep = [
+            g
+            for g in adata_ref.var_names
+            if ref_gene_to_homo.get(str(g)) in common_homo
+        ]
 
-    return adata_source, adata_target
+        query_keep = [
+            g
+            for g in adata_query.var_names
+            if query_gene_to_homo.get(str(g)) in common_homo
+        ]
+
+        align_info = {
+            "mode": "homo",
+            "homo_col": homo_col,
+            "n_ref_before": n_ref_before,
+            "n_query_before": n_query_before,
+            "n_ref_mapped": len(ref_gene_to_homo),
+            "n_query_mapped": len(query_gene_to_homo),
+            "n_common_homo": len(common_homo),
+            "n_ref_after": len(ref_keep),
+            "n_query_after": len(query_keep),
+        }
+
+        print(
+            f"[INFO] Gene alignment mode=homo | "
+            f"ref {n_ref_before}->{len(ref_keep)} mapped={len(ref_gene_to_homo)}, "
+            f"query {n_query_before}->{len(query_keep)} mapped={len(query_gene_to_homo)}, "
+            f"common_homo={len(common_homo)}"
+        )
+
+        return adata_ref[:, ref_keep].copy(), adata_query[:, query_keep].copy(), align_info
+
+    raise ValueError("Unsupported mode. Expected mode='gene' or mode='homo'.")
 
 
 def map_homologs(
