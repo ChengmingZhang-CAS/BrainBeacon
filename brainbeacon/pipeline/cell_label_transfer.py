@@ -690,6 +690,182 @@ def align_ref_query_genes(
 
     raise ValueError("Unsupported mode. Expected mode='gene' or mode='homo'.")
 
+def align_ref_query_list_genes(
+    adata_ref,
+    adata_query_list,
+    mode="homo",
+    gene_dict=None,
+    query_names=None,
+    homo_col="homo_connect_id",
+):
+    """
+    Align one reference AnnData and multiple query AnnData objects to a shared gene/homo space.
+
+    mode="gene":
+        Keep genes shared by ref and all queries using var_names intersection.
+
+    mode="homo":
+        Keep genes whose homo_connect_id is shared by ref and all queries.
+        This avoids over-restricting cross-species data by direct var_names intersection.
+
+    Parameters
+    ----------
+    adata_ref : AnnData
+        Reference AnnData.
+    adata_query_list : list[AnnData]
+        Query AnnData objects.
+    mode : str
+        "gene" or "homo".
+    gene_dict : AnnData or None
+        Gene dictionary used when mode="homo".
+    query_names : list[str] or None
+        Names of query datasets for logging and align_info.
+    homo_col : str
+        Column name in gene_dict.var for homologous group IDs.
+
+    Returns
+    -------
+    adata_ref : AnnData
+        Aligned reference AnnData.
+    aligned_query_list : list[AnnData]
+        Aligned query AnnData objects.
+    align_info : dict
+        Alignment information.
+    """
+    if not isinstance(adata_query_list, (list, tuple)):
+        raise TypeError("adata_query_list must be a list or tuple of AnnData objects.")
+
+    if len(adata_query_list) == 0:
+        raise ValueError("adata_query_list must contain at least one query AnnData.")
+
+    if query_names is None:
+        query_names = [f"query_{i}" for i in range(len(adata_query_list))]
+
+    if len(query_names) != len(adata_query_list):
+        raise ValueError(
+            f"query_names and adata_query_list must have the same length, "
+            f"got {len(query_names)} and {len(adata_query_list)}."
+        )
+
+    mode = str(mode).lower()
+    all_names = ["ref"] + list(query_names)
+    all_adata = [adata_ref] + list(adata_query_list)
+    n_vars_before = {name: int(adata.n_vars) for name, adata in zip(all_names, all_adata)}
+
+    if mode == "gene":
+        common_genes = adata_ref.var_names.copy()
+
+        for adata_query in adata_query_list:
+            common_genes = common_genes.intersection(adata_query.var_names)
+
+        if len(common_genes) == 0:
+            raise ValueError("No common genes remain after multi-query gene alignment.")
+
+        adata_ref = adata_ref[:, common_genes].copy()
+        aligned_query_list = [
+            adata_query[:, common_genes].copy()
+            for adata_query in adata_query_list
+        ]
+
+        align_info = {
+            "mode": "gene",
+            "n_queries": len(aligned_query_list),
+            "query_names": list(query_names),
+            "n_vars_before": n_vars_before,
+            "n_common_genes": int(len(common_genes)),
+            "n_vars_after": {
+                name: int(adata.n_vars)
+                for name, adata in zip(all_names, [adata_ref] + aligned_query_list)
+            },
+        }
+
+        print(
+            f"[INFO] Multi-query gene alignment mode=gene | "
+            f"common_genes={len(common_genes)}"
+        )
+
+        return adata_ref, aligned_query_list, align_info
+
+    if mode == "homo":
+        if gene_dict is None:
+            raise ValueError("gene_dict is required when mode='homo'.")
+
+        if homo_col not in gene_dict.var.columns:
+            raise KeyError(f"'{homo_col}' not found in gene_dict.var.")
+
+        gene_to_homo = {
+            str(gene): homo
+            for gene, homo in gene_dict.var[homo_col].items()
+            if not pd.isna(homo)
+        }
+
+        adata_gene_to_homo_list = []
+        adata_homo_sets = []
+
+        for adata in all_adata:
+            gene_to_homo_this = {
+                str(g): gene_to_homo[str(g)]
+                for g in adata.var_names
+                if str(g) in gene_to_homo
+            }
+            adata_gene_to_homo_list.append(gene_to_homo_this)
+            adata_homo_sets.append(set(gene_to_homo_this.values()))
+
+        common_homo = set.intersection(*adata_homo_sets)
+
+        if len(common_homo) == 0:
+            raise ValueError("No common homo groups remain after multi-query homo alignment.")
+
+        aligned_adata_list = []
+        n_mapped = {}
+        n_vars_after = {}
+        n_unique_homo_after = {}
+
+        for name, adata, gene_to_homo_this in zip(all_names, all_adata, adata_gene_to_homo_list):
+            keep_genes = [
+                g
+                for g in adata.var_names
+                if gene_to_homo_this.get(str(g)) in common_homo
+            ]
+
+            aligned = adata[:, keep_genes].copy()
+            aligned_adata_list.append(aligned)
+
+            kept_homo = {
+                gene_to_homo_this[str(g)]
+                for g in keep_genes
+                if str(g) in gene_to_homo_this
+            }
+
+            n_mapped[name] = int(len(gene_to_homo_this))
+            n_vars_after[name] = int(aligned.n_vars)
+            n_unique_homo_after[name] = int(len(kept_homo))
+
+        adata_ref = aligned_adata_list[0]
+        aligned_query_list = aligned_adata_list[1:]
+
+        align_info = {
+            "mode": "homo",
+            "homo_col": homo_col,
+            "n_queries": len(aligned_query_list),
+            "query_names": list(query_names),
+            "n_vars_before": n_vars_before,
+            "n_mapped": n_mapped,
+            "n_common_homo": int(len(common_homo)),
+            "n_vars_after": n_vars_after,
+            "n_unique_homo_after": n_unique_homo_after,
+        }
+
+        print(
+            f"[INFO] Multi-query gene alignment mode=homo | "
+            f"common_homo={len(common_homo)}, "
+            f"n_vars_after={n_vars_after}"
+        )
+
+        return adata_ref, aligned_query_list, align_info
+
+    raise ValueError("Unsupported mode. Expected mode='gene' or mode='homo'.")
+
 
 def map_homologs(
     adata: sc.AnnData,
