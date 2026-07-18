@@ -15,7 +15,7 @@ import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # for reproducibility with FAISS + CUDA
 
 from typing import Literal
-from brainbeacon.tokenizer import ensure_ensembl_ids
+# from brainbeacon.tokenizer import ensure_ensembl_ids
 from typing import Dict, List, Optional
 
 
@@ -508,6 +508,7 @@ def preprocess_one_adata(
             print("[INFO] add_marker_genes=True, but no prior marker genes were available for HVG forcing.")
 
     # 6) same-species or no-conversion branch
+    from brainbeacon.tokenizer import ensure_ensembl_ids
     if info["species"] == target_species or not convert_id:
         if info["species"] != target_species and not convert_id and add_genes:
             warnings.warn("[WARN] convert_id=False and species differ from target; add_genes may not match current gene namespace.")

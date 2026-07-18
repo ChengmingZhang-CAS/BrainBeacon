@@ -1160,7 +1160,7 @@ def run_stage1_pipeline(
     Supported modes
     ---------------
     - "disk":
-        Tokenize to disk with joblib bundles, then run disk-based inference.
+        Tokenize to disk with joblib bundles, then run disk-based inference (discarded).
     - "memory":
         Run in-memory fast inference without writing token bundles to disk.
 
