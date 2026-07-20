@@ -15,7 +15,6 @@ import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # for reproducibility with FAISS + CUDA
 
 from typing import Literal
-# from brainbeacon.tokenizer import ensure_ensembl_ids
 from typing import Dict, List, Optional
 
 
@@ -424,6 +423,9 @@ def preprocess_one_adata(
 ) -> AnnData:
     """Preprocess a single AnnData with optional smoothing, ID conversion, HVG, and forcing extra genes into HVG set."""
     print(f"[INFO] Preprocessing {info['data_name']}...")
+    adata.obs_names = adata.obs_names.astype(str)
+    if not adata.obs_names.is_unique:
+        adata.obs_names_make_unique()
 
     # 1) ensure gene name column
     if "genenames" not in adata.var.columns:
@@ -442,6 +444,9 @@ def preprocess_one_adata(
         elif "x" in adata.obs.columns and "y" in adata.obs.columns:
             adata.obsm["spatial"] = adata.obs[["x", "y"]].values.astype(float)
             print(f"[INFO] Spatial coordinates added from x/y for {info['data_name']}.")
+        elif "coor_x" in adata.obs.columns and "coor_y" in adata.obs.columns:
+            adata.obsm["spatial"] = adata.obs[["coor_x", "coor_y"]].values.astype(float)
+            print(f"[INFO] Spatial coordinates added from coor_x/coor_y for {info['data_name']}.")
         else:
             warnings.warn(f"Spatial coordinates not found for {info['data_name']}. Skipping smoothing.")
 
@@ -508,7 +513,6 @@ def preprocess_one_adata(
             print("[INFO] add_marker_genes=True, but no prior marker genes were available for HVG forcing.")
 
     # 6) same-species or no-conversion branch
-    from brainbeacon.tokenizer import ensure_ensembl_ids
     if info["species"] == target_species or not convert_id:
         if info["species"] != target_species and not convert_id and add_genes:
             warnings.warn("[WARN] convert_id=False and species differ from target; add_genes may not match current gene namespace.")
@@ -517,6 +521,7 @@ def preprocess_one_adata(
             # Ensure Ensembl IDs for BrainBeacon input
             if not adata.var_names.str.startswith("ENS").all():
                 print(f"[WARN] {info['data_name']} gene IDs not in Ensembl format, running ensure_ensembl_ids()...")
+                from brainbeacon.tokenizer import ensure_ensembl_ids
                 adata = ensure_ensembl_ids(adata, species=info["species"])
 
         adata.var_names_make_unique()
@@ -541,6 +546,7 @@ def preprocess_one_adata(
 
     species_list = ["macaque", "marmoset", "human", "mouse"]
     if target_species in species_list:
+        from brainbeacon.tokenizer import ensure_ensembl_ids
         adata = ensure_ensembl_ids(adata, species=target_species)
     else:
         warnings.warn(f"Unknown species '{target_species}'. Skipping Ensembl ID conversion.")
@@ -1190,6 +1196,14 @@ def plot_spatial_comparison(
 
     # --- Make a working copy to avoid modifying the original ---
     adata = adata.copy()
+    if "spatial" not in adata.obsm:
+        for cols in [("spatial1", "spatial2"), ("x", "y"), ("X", "Y"), ("rx", "ry"), ("coor_x", "coor_y")]:
+            if all(col in adata.obs.columns for col in cols):
+                adata.obsm["spatial"] = adata.obs.loc[:, list(cols)].to_numpy(dtype=float)
+                break
+    elif "spatial" in adata.obsm:
+        adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=float)
+
     if exclude_unassigned and "unassigned" in adata.obs[pred_label_col].cat.categories:
         before = adata.n_obs
         adata = adata[adata.obs[pred_label_col] != "unassigned"].copy()
