@@ -40,11 +40,14 @@ stage1_config = {
     'use_esm_emb': True,
     'use_rna_type_emb': True,
     "homo_mean_targets": [],  # "homo_mean_targets": ["gene_id", "esm"]
+    "comp_mean_bias": [],  # comp_mean_bias=["gid", "homo", "rna"]
+    "comp_center": [],  # optional: ["gid", "homo", "rna", "pos", "dev"]
     # 'neighbor_enhance': True,
     # 'num_neighbors': 4,  # legacy
     'use_gene_deviation': True,
     'use_cell_density': True,
     'use_dev_abs': True,
+    "comp_scale": {},
     'cd_weight': 0.02,
     # 'root_path': '/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST',
     'esm_emb_dim': 5120,
@@ -58,8 +61,8 @@ stage1_config = {
     'use_mean_norm': True,
     'weight_mode': 'expression',
     'expr_mode': None,
+    'emb_layer': 'last',  # Stage1 bb_emb readout: 'last', 'input', or encoder layer index such as 0/1/-1
     'force_tokenize': False,
-
 }
 
 train_path = [

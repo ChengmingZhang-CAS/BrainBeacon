@@ -1354,7 +1354,7 @@ def _build_feature_lookup(real_indices, feature_values, n_aux, n_tokens):
     max_token = int(real_indices.max()) if real_indices.size else 0
     lookup_size = max(max_token + 1, n_tokens + n_aux + 1)
     lookup = np.zeros(lookup_size, dtype=np.int32)
-    valid = (real_indices > n_aux) & (real_indices < lookup_size)
+    valid = (real_indices >= n_aux) & (real_indices < lookup_size)
     if np.any(valid):
         lookup[real_indices[valid]] = feature_values[valid]
     return lookup
@@ -1387,7 +1387,7 @@ def _mask_indices_numpy(indices, p, n_tokens, n_aux, rng):
     real_indices = indices.astype(np.int32, copy=True)
     real_indices[real_indices == 0] = padding_token
 
-    candidate_mask = real_indices > n_aux
+    candidate_mask = real_indices >= n_aux
     keep_mask = np.ones(real_indices.shape, dtype=np.int32)
     keep_mask[candidate_mask] = (rng.random(np.count_nonzero(candidate_mask)) >= p).astype(np.int32)
 
@@ -1397,7 +1397,7 @@ def _mask_indices_numpy(indices, p, n_tokens, n_aux, rng):
 
     replace_with_random = (masked_indices == 0) & (rng.random(masked_indices.shape) < 0.1)
     if replace_with_random.any():
-        random_tokens = rng.integers(n_aux + 1, n_tokens + n_aux, size=masked_indices.shape, dtype=np.int32)
+        random_tokens = rng.integers(n_aux, n_tokens + n_aux, size=masked_indices.shape, dtype=np.int32)
         masked_indices[replace_with_random] = random_tokens[replace_with_random]
 
     replace_with_original = (masked_indices == 0) & (rng.random(masked_indices.shape) < 0.1)

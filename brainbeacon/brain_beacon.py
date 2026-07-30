@@ -174,13 +174,16 @@ class GeneEmbedding_old(nn.Module):
 
 class GeneEmbedding(nn.Module):
     def __init__(self, n_tokens, n_connect_comp, n_rna_type, dim_model, n_aux,
-                 use_gene_id_emb=True, use_homo_emb=True, use_rna_type_emb=True):
+                 use_gene_id_emb=True, use_homo_emb=True, use_rna_type_emb=True,
+                 comp_scale=None, comp_mean_bias=None):
         super(GeneEmbedding, self).__init__()
         self.use_gene_id_emb = use_gene_id_emb
         self.use_homo_emb = use_homo_emb
         self.use_rna_type_emb = use_rna_type_emb
         self.n_tokens = n_tokens
         self.n_aux = n_aux
+        self.comp_scale = dict(comp_scale or {})
+        self.comp_mean_bias = set(comp_mean_bias or [])
 
         self.basic_embedding = nn.Embedding(
             num_embeddings=n_tokens + n_aux,
@@ -196,26 +199,45 @@ class GeneEmbedding(nn.Module):
             embedding_dim=dim_model,
         )
 
+    def _scale(self, key):
+        return float(self.comp_scale.get(key, 1.0))
+
     def forward(self, x_gene_id, x_connect_id, x_rna_type):
+        basic_emb = self.basic_embedding(x_gene_id.long())
+        gene_mask = (x_gene_id >= self.n_aux).unsqueeze(-1)
+
         if self.use_gene_id_emb:
-            x_gene_emb = self.basic_embedding(x_gene_id.long())
+            x_gene_emb = basic_emb
+        elif "gid" in self.comp_mean_bias:
+            mean_emb = self.basic_embedding.weight[self.n_aux:].mean(dim=0)
+            mean_emb = mean_emb[None, None, :].expand(
+                x_gene_id.shape[0], x_gene_id.shape[1], -1
+            )
+            x_gene_emb = torch.where(gene_mask, mean_emb, basic_emb)
         else:
-            mean_emb = self.basic_embedding.weight[self.n_tokens:].mean(dim=0)
-            x_gene_emb = mean_emb[None, None, :].expand(x_gene_id.shape[0], x_gene_id.shape[1], -1)
+            x_gene_emb = torch.where(gene_mask, torch.zeros_like(basic_emb), basic_emb)
 
         if self.use_homo_emb:
             x_connect_emb = self.homo_connect_embedding(x_connect_id.long())
-        else:
+        elif "homo" in self.comp_mean_bias:
             mean_emb = self.homo_connect_embedding.weight[1:].mean(dim=0)
             x_connect_emb = mean_emb[None, None, :].expand(x_connect_id.shape[0], x_connect_id.shape[1], -1)
+        else:
+            x_connect_emb = 0
 
         if self.use_rna_type_emb:
             x_rna_emb = self.rna_type_embedding(x_rna_type.long())
-        else:
+        elif "rna" in self.comp_mean_bias:
             mean_emb = self.rna_type_embedding.weight[1:].mean(dim=0)
             x_rna_emb = mean_emb[None, None, :].expand(x_rna_type.shape[0], x_rna_type.shape[1], -1)
+        else:
+            x_rna_emb = 0
 
-        return x_gene_emb + x_connect_emb + x_rna_emb
+        return (
+                self._scale("gid") * x_gene_emb
+                + self._scale("homo") * x_connect_emb
+                + self._scale("rna") * x_rna_emb
+        )
 
 class BrainBeacon(nn.Module):
     def __init__(
@@ -240,18 +262,25 @@ class BrainBeacon(nn.Module):
             use_density_emb=True,  # add density token usage flag
             density_token_idx=2,  # density token position (default: 2 when specie=True, assay=True)
             neighbor_enhance=True,  # gene deviation
+            comp_scale=None,
+            comp_mean_bias=None,
     ):
         super(BrainBeacon, self).__init__()
         self.use_esm_emb = use_esm_emb
         self.use_pos_emb = use_pos_emb
         self.use_density_emb = use_density_emb
         self.density_token_idx = density_token_idx
+        self.comp_scale = dict(comp_scale or {})
+        self.comp_mean_bias = set(comp_mean_bias or [])
+
         # self.embedding = GeneEmbedding(n_tokens, n_connect_comp, n_rna_type, n_neighbor, dim_model, n_aux)
         self.embedding = GeneEmbedding(
             n_tokens, n_connect_comp, n_rna_type, dim_model, n_aux,
             use_gene_id_emb=use_gene_id_emb,
             use_homo_emb=use_homo_emb,
-            use_rna_type_emb=use_rna_type_emb
+            use_rna_type_emb=use_rna_type_emb,
+            comp_scale=self.comp_scale,
+            comp_mean_bias=self.comp_mean_bias,
         )
 
         self.encoder_layer = nn.TransformerEncoderLayer(
@@ -413,23 +442,82 @@ class BrainBeacon(nn.Module):
         """Clear stored attention weights to free memory."""
         self._attention_weights = []
 
-    def encode(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
+    def _scale(self, key):
+        return float(self.comp_scale.get(key, 1.0))
+
+    @staticmethod
+    def _normalize_output_layer(output_layer):
+        if output_layer is None:
+            return "last"
+        if isinstance(output_layer, str):
+            value = output_layer.strip().lower()
+            if value in {"last", "input"}:
+                return value
+            try:
+                return int(value)
+            except ValueError as exc:
+                raise ValueError(
+                    "output_layer must be 'last', 'input', or an integer encoder layer index."
+                ) from exc
+        if isinstance(output_layer, int):
+            return output_layer
+        raise ValueError("output_layer must be 'last', 'input', or an integer encoder layer index.")
+
+    def _encode_layers(self, embeddings, attention_mask, output_layer):
+        layer_spec = self._normalize_output_layer(output_layer)
+        if layer_spec == "input":
+            return embeddings
+        if layer_spec == "last":
+            return self.encoder(embeddings, src_key_padding_mask=attention_mask)
+
+        layers = self.encoder.layers
+        if layer_spec < 0:
+            layer_spec = len(layers) + layer_spec
+        if layer_spec < 0 or layer_spec >= len(layers):
+            raise ValueError(
+                f"output_layer={output_layer} is out of range for {len(layers)} encoder layers."
+            )
+
+        output = embeddings
+        for idx, layer in enumerate(layers):
+            output = layer(output, src_key_padding_mask=attention_mask)
+            if idx == layer_spec:
+                if idx == len(layers) - 1 and self.encoder.norm is not None:
+                    output = self.encoder.norm(output)
+                return output
+        return output
+
+    # def encode(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
+    def encode(
+            self,
+            x_gene_id,
+            x_connect_id,
+            x_rna_type,
+            attention_mask,
+            esm_embedding,
+            neighbor_gene_distribution,
+            output_layer="last",
+    ):
         token_embedding = self.embedding(x_gene_id, x_connect_id, x_rna_type)
         if self.use_esm_emb:
-            token_embedding += self.esm_embedding_projection(esm_embedding)
+            # token_embedding += self.esm_embedding_projection(esm_embedding)
+            token_embedding += self._scale("esm") * self.esm_embedding_projection(esm_embedding)
         if self.neighbor_enhance:
             neighbor_embedding = self.neighbor_projection(neighbor_gene_distribution)
-            token_embedding += neighbor_embedding
+            # token_embedding += neighbor_embedding
+            token_embedding += self._scale("dev") * neighbor_embedding
         if self.use_pos_emb:
             pos = self.pos.to(token_embedding.device)
             pos_embedding = self.positional_embedding(pos)  # batch x (n_tokens) x dim_model
-            embeddings = self.dropout(token_embedding + pos_embedding)
+            # embeddings = self.dropout(token_embedding + pos_embedding)
+            embeddings = self.dropout(token_embedding + self._scale("pos") * pos_embedding)
         else:
             embeddings = self.dropout(token_embedding)
         # Zero out density token embedding if disabled
         if not self.use_density_emb:
             embeddings[:, self.density_token_idx, :] = 0
-        return self.encoder(embeddings, src_key_padding_mask=attention_mask)
+        # return self.encoder(embeddings, src_key_padding_mask=attention_mask)
+        return self._encode_layers(embeddings, attention_mask, output_layer)
 
     def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
         transformer_output = self.encode(

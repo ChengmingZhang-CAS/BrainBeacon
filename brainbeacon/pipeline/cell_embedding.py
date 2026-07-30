@@ -58,6 +58,38 @@ def normalize_brainbeacon_model_config(model_config: dict) -> dict:
     normalized.setdefault("neighbor_enhance", bool(normalized["use_gene_deviation"]))
     normalized.setdefault("density_token_idx", 2)
 
+    normalized["comp_scale"] = dict(normalized.get("comp_scale") or {})
+    if "gene_id" in normalized["comp_scale"] and "gid" not in normalized["comp_scale"]:
+        normalized["comp_scale"]["gid"] = normalized["comp_scale"].pop("gene_id")
+
+    normalized.setdefault("comp_mean_bias", [])
+    if normalized["comp_mean_bias"] is None:
+        normalized["comp_mean_bias"] = []
+    elif isinstance(normalized["comp_mean_bias"], str):
+        normalized["comp_mean_bias"] = [
+            x.strip() for x in normalized["comp_mean_bias"].split(",") if x.strip()
+        ]
+    normalized["comp_mean_bias"] = [
+        "gid" if x == "gene_id" else x for x in normalized["comp_mean_bias"]
+    ]
+
+    normalized.setdefault("comp_center", [])
+    if normalized["comp_center"] is None:
+        normalized["comp_center"] = []
+    elif isinstance(normalized["comp_center"], str):
+        normalized["comp_center"] = [
+            x.strip() for x in normalized["comp_center"].split(",") if x.strip()
+        ]
+    normalized["comp_center"] = [
+        "gid" if x == "gene_id" else x for x in normalized["comp_center"]
+    ]
+
+    emb_layer = normalized.get("emb_layer", "last")
+    if isinstance(emb_layer, str):
+        emb_layer = emb_layer.strip().lower()
+        if emb_layer not in {"last", "input"}:
+            emb_layer = int(emb_layer)
+    normalized["emb_layer"] = emb_layer
     return normalized
 
 
@@ -193,6 +225,8 @@ class BrainBeaconCellCluster(nn.Module):
             neighbor_enhance=self.model_config["use_gene_deviation"],
             use_density_emb=self.model_config["use_cell_density"],
             density_token_idx=self.model_config["density_token_idx"],
+            comp_scale=self.model_config.get("comp_scale", {}),
+            comp_mean_bias=self.model_config.get("comp_mean_bias", []),
         )
 
     def forward(
@@ -213,8 +247,8 @@ class BrainBeaconCellCluster(nn.Module):
             attention_mask,
             esm_embedding,
             neighbor_gene_distribution,
+            output_layer=self.model_config.get("emb_layer", "last"),
         )
-
 
 class ZeroshotJoblibDataset(Dataset):
     def __init__(
@@ -344,6 +378,7 @@ class CellEmbeddingPipeline:
 
                 # Apply homo-mean override to checkpoint-loaded token embeddings.
                 self.apply_homo_mean_after_load()
+                self.apply_comp_center_after_load()
                 return
 
             model_dict = self.model.pretrain_model.state_dict()
@@ -369,6 +404,8 @@ class CellEmbeddingPipeline:
 
             # Apply homo-mean override to checkpoint-loaded token embeddings.
             self.apply_homo_mean_after_load()
+            self.apply_comp_center_after_load()
+            return
 
         except Exception as e:
             print(f"Error loading checkpoint: {e}")
@@ -483,6 +520,38 @@ class CellEmbeddingPipeline:
         if "gene_id" in targets:
             gene_id_matrix = self.model.pretrain_model.embedding.basic_embedding.weight
             self._apply_homo_mean_to_token_matrix(gene_id_matrix, "gene_id_embedding")
+
+    @torch.no_grad()
+    def apply_comp_center_after_load(self):
+        """Center selected native embedding tables after checkpoint load."""
+        targets = set(self.model_config.get("comp_center", []) or [])
+        if not targets:
+            return
+
+        model = self.model.pretrain_model
+        n_aux = int(self.model_config.get("n_aux", 20))
+
+        if "gid" in targets:
+            w = model.embedding.basic_embedding.weight
+            w[n_aux:] -= w[n_aux:].mean(dim=0, keepdim=True)
+
+        if "homo" in targets:
+            w = model.embedding.homo_connect_embedding.weight
+            w[1:] -= w[1:].mean(dim=0, keepdim=True)
+
+        if "rna" in targets:
+            w = model.embedding.rna_type_embedding.weight
+            w[1:] -= w[1:].mean(dim=0, keepdim=True)
+
+        if "pos" in targets:
+            w = model.positional_embedding.weight
+            w[:] -= w.mean(dim=0, keepdim=True)
+
+        if "dev" in targets and hasattr(model, "neighbor_projection"):
+            w = model.neighbor_projection.weight
+            w[:] -= w.mean(dim=0, keepdim=True)
+
+        print(f"[INFO] Applied comp_center: {sorted(targets)}")
 
     @torch.no_grad()
     def apply_homo_mean_to_esm_map(self, esm_embedding_map):
@@ -1313,6 +1382,34 @@ def build_covariate_encoders(config):
         return None
     return {field: IdentityEncoder() for field in cov_fields}
 
+def apply_stage2_input_mode(data, config):
+    mode = config.get("stage2_input_mode", "raw")
+    if mode in (None, "raw", "none"):
+        return data
+
+    if "bb_emb" not in data.obsm:
+        raise KeyError("stage2_input_mode requires adata.obsm['bb_emb'].")
+
+    if "bb_emb_raw" not in data.obsm:
+        data.obsm["bb_emb_raw"] = np.asarray(data.obsm["bb_emb"], dtype=np.float32).copy()
+
+    x = np.asarray(data.obsm["bb_emb_raw"], dtype=np.float32)
+
+    if mode in ("center", "within_dataset_center"):
+        y = x - x.mean(axis=0, keepdims=True)
+    elif mode == "l2":
+        denom = np.linalg.norm(x, axis=1, keepdims=True)
+        y = x / np.clip(denom, 1e-8, None)
+    elif mode in ("center_l2", "within_dataset_center_l2"):
+        y = x - x.mean(axis=0, keepdims=True)
+        denom = np.linalg.norm(y, axis=1, keepdims=True)
+        y = y / np.clip(denom, 1e-8, None)
+    else:
+        raise ValueError(f"Unknown stage2_input_mode: {mode}")
+
+    data.obsm["bb_emb"] = y.astype(np.float32, copy=False)
+    data.uns["stage2_input_mode"] = mode
+    return data
 
 def run_stage2_pipeline(
         adata,
@@ -1332,6 +1429,8 @@ def run_stage2_pipeline(
     # Load AnnData file
     data = adata.copy()
     data.obs_names_make_unique()
+    data = apply_stage2_input_mode(data, config)
+
     # set train/valid split
     data.obs['valid_split'] = 'train'
     if 'slice' not in data.obs.columns:

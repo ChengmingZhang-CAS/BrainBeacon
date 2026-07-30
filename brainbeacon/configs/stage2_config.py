@@ -34,6 +34,7 @@ stage2_config = {
   "max_train_cells": 50000,
   "max_batch_size": 2000,
   "max_eval_batch_size": 2000,
+  "stage2_input_mode": "raw",  # set "center" to norm bb emb
   "fit_only": False,  # set True when only fitting the model to get rolling checkpoints
   "sampling_mode": "spatial",
   "use_patch": True,  # Deprecated: Not used in training loop.
