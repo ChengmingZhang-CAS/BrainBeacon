@@ -355,26 +355,35 @@ def plot_label_profile_metric_panels(panels, rows, cols, title, out_path, cmap="
             cbar_kws={"label": "row-normalized value"},
         )
         if np.size(mat):
-            top_cols = np.nanargmax(mat, axis=1)
             col_to_j = {str(col): j for j, col in enumerate(cols)}
-            for i, j in enumerate(top_cols):
-                value = mat[i, j]
-                if np.isfinite(value):
-                    ax.text(
-                        j + 0.5,
-                        i + 0.5,
-                        format_metric_value(value),
-                        ha="center",
-                        va="center",
-                        color="white" if value >= 0.55 else "black",
-                        fontsize=7,
-                        fontweight="bold",
-                    )
             for i, row in enumerate(rows):
-                j = col_to_j.get(str(row))
-                if j is None:
+                row_values = np.asarray(mat[i], dtype=float)
+                finite = np.isfinite(row_values)
+                if np.any(finite):
+                    top_j = int(np.nanargmax(row_values))
+                    ax.scatter(
+                        top_j + 0.5,
+                        i + 0.5,
+                        s=20,
+                        marker="o",
+                        facecolors="white",
+                        edgecolors="0.2",
+                        linewidths=0.6,
+                        zorder=5,
+                    )
+                expected_j = col_to_j.get(str(row))
+                if expected_j is None:
                     continue
-                ax.add_patch(plt.Rectangle((j, i), 1, 1, fill=False, edgecolor="black", lw=1.3))
+                ax.scatter(
+                    expected_j + 0.5,
+                    i + 0.5,
+                    s=42,
+                    marker="o",
+                    facecolors="none",
+                    edgecolors="0.75",
+                    linewidths=1.0,
+                    zorder=4,
+                )
         ax.set_title(
             f"{panel['metric']}\n"
             f"SNrank={format_metric_value(panel.get('rank'))}; "
@@ -384,6 +393,7 @@ def plot_label_profile_metric_panels(panels, rows, cols, title, out_path, cmap="
         ax.set_xlabel("reference label")
         ax.set_ylabel("query/predicted label")
     fig.suptitle(title, y=1.02)
+    fig.text(0.5, 0.01, "Open circle: same-label reference; filled circle: row-wise top match", ha="center", fontsize=9)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
