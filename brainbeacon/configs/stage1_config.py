@@ -41,13 +41,14 @@ stage1_config = {
     'use_rna_type_emb': True,
     "homo_mean_targets": [],  # "homo_mean_targets": ["gene_id", "esm"]
     "comp_mean_bias": [],  # comp_mean_bias=["gid", "homo", "rna"]
-    "comp_center": [],  # optional: ["gid", "homo", "rna", "pos", "dev"]
+    "comp_center": [],  # optional: ["gid", "homo", "rna", "pos", "dev", "esm"]
     # 'neighbor_enhance': True,
     # 'num_neighbors': 4,  # legacy
     'use_gene_deviation': True,
     'use_cell_density': True,
     'use_dev_abs': True,
     "comp_scale": {},
+    "comp_scale": {},  # optional: {"gid": 1.0, "homo": 1.0, "rna": 1.0, "esm": 1.0, "dev": 1.0, "pos": 1.0}
     'cd_weight': 0.02,
     # 'root_path': '/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST',
     'esm_emb_dim': 5120,

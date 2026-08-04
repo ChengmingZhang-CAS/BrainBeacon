@@ -434,7 +434,7 @@ class CellEmbeddingPipeline:
 
         gene_dict_path = self.model_config.get("gene_dict_path", None)
         if gene_dict_path is None:
-            raise ValueError("homo_mean_targets requires gene_dict_path in model_config.")
+            raise ValueError("Gene-token operations require gene_dict_path in model_config.")
 
         gene_dict = sc.read_h5ad(gene_dict_path)
         gvar = gene_dict.var
@@ -484,6 +484,14 @@ class CellEmbeddingPipeline:
         token_ids = token_ids.to(device=device)
         homo_ids = homo_ids.to(device=device)
 
+        if name == "esm_embedding_map":
+            has_vector = matrix[token_ids].abs().sum(dim=1) != 0
+            token_ids = token_ids[has_vector]
+            homo_ids = homo_ids[has_vector]
+            if token_ids.numel() == 0:
+                print(f"[INFO] Skipped homo-mean override for {name}: no nonzero ESM rows.")
+                return
+
         dim = matrix.shape[1]
         group_sum = torch.zeros(n_homo + 1, dim, device=device, dtype=dtype)
         group_count = torch.zeros(n_homo + 1, 1, device=device, dtype=dtype)
@@ -502,6 +510,23 @@ class CellEmbeddingPipeline:
             f"[INFO] Applied homo-mean override to {name}: "
             f"{token_ids.numel()} tokens, {torch.unique(homo_ids).numel()} homo groups."
         )
+
+    @torch.no_grad()
+    def _center_gene_rows_in_token_matrix(self, matrix, name):
+        """Center valid gene-token rows by their global mean vector."""
+        if matrix.dim() != 2:
+            raise ValueError(f"{name} must be a 2D matrix, got shape {tuple(matrix.shape)}.")
+
+        token_ids, _, _ = self._get_gene_token_homo_ids(matrix_n_tokens=matrix.shape[0])
+        token_ids = token_ids.to(device=matrix.device)
+        if name == "esm_embedding_map":
+            has_vector = matrix[token_ids].abs().sum(dim=1) != 0
+            token_ids = token_ids[has_vector]
+            if token_ids.numel() == 0:
+                print(f"[INFO] Skipped gene-row centering for {name}: no nonzero ESM rows.")
+                return
+        matrix[token_ids] -= matrix[token_ids].mean(dim=0, keepdim=True)
+        print(f"[INFO] Applied gene-row centering to {name}: {token_ids.numel()} tokens.")
 
     @torch.no_grad()
     def apply_homo_mean_after_load(self):
@@ -524,7 +549,7 @@ class CellEmbeddingPipeline:
     @torch.no_grad()
     def apply_comp_center_after_load(self):
         """Center selected native embedding tables after checkpoint load."""
-        targets = set(self.model_config.get("comp_center", []) or [])
+        targets = set(self.model_config.get("comp_center", []) or []) - {"esm"}
         if not targets:
             return
 
@@ -555,11 +580,14 @@ class CellEmbeddingPipeline:
 
     @torch.no_grad()
     def apply_homo_mean_to_esm_map(self, esm_embedding_map):
-        """Apply homo-mean override to ESM embedding map when requested."""
+        """Apply requested preprocessing to the fixed ESM embedding map."""
+        center_targets = set(self.model_config.get("comp_center", []) or [])
+        if "esm" in center_targets:
+            self._center_gene_rows_in_token_matrix(esm_embedding_map, "esm_embedding_map")
+
         targets = self._get_homo_mean_targets()
         if "esm" not in targets:
             return esm_embedding_map
-
         self._apply_homo_mean_to_token_matrix(esm_embedding_map, "esm_embedding_map")
         return esm_embedding_map
 

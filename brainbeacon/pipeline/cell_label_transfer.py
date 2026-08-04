@@ -12,6 +12,7 @@ from anndata import AnnData
 
 from sklearn.preprocessing import normalize
 from brainbeacon.tokenizer import sf_normalize
+from brainbeacon.evaluation.label_transfer import label_order
 
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # for reproducibility with FAISS + CUDA
@@ -291,13 +292,8 @@ def corrected_expression_matrix(adata, mean_vector):
     return x
 
 
-def corrected_homo_profile_matrix(adata, gene_dict, mean_matrix, homo_order, homo_col="homo_connect_id"):
-    """Build cell by homo-group profiles from BB mean-corrected expression.
-
-    When multiple genes map to one homo group, their corrected values are averaged.
-    """
-    mean_vector = mean_vector_for_adata(adata, gene_dict, mean_matrix)
-    x = corrected_expression_matrix(adata, mean_vector)
+def homo_profile_matrix_from_expression(adata, x, homo_order, homo_col="homo_connect_id"):
+    """Average gene-level expression into a fixed homo-group feature order."""
     homo = adata.var[homo_col].astype(str).to_numpy()
     homo_to_col = {str(h): i for i, h in enumerate(homo_order)}
     row_idx = []
@@ -319,6 +315,16 @@ def corrected_homo_profile_matrix(adata, gene_dict, mean_matrix, homo_order, hom
     return profile.tocsr() if sparse.issparse(profile) else sparse.csr_matrix(profile)
 
 
+def corrected_homo_profile_matrix(adata, gene_dict, mean_matrix, homo_order, homo_col="homo_connect_id"):
+    """Build cell by homo-group profiles from BB mean-corrected expression.
+
+    When multiple genes map to one homo group, their corrected values are averaged.
+    """
+    mean_vector = mean_vector_for_adata(adata, gene_dict, mean_matrix)
+    x = corrected_expression_matrix(adata, mean_vector)
+    return homo_profile_matrix_from_expression(adata, x, homo_order, homo_col=homo_col)
+
+
 def compute_ref_homo_marker_scores(
     ref,
     label_col,
@@ -333,7 +339,7 @@ def compute_ref_homo_marker_scores(
     """Select subclass marker homo groups from a reference dataset.
 
     Scores use BB mean-corrected expression. `marker_score_mode="second"` scores
-    against the nearest other subclass; `"rest_mean"` scores against all other cells.
+    against the nearest other subclass; `"rest"` scores against all other cells.
     """
     mean_vector = mean_vector_for_adata(ref, gene_dict, mean_matrix)
     x = corrected_expression_matrix(ref, mean_vector)
@@ -390,7 +396,7 @@ def compute_ref_homo_marker_scores(
         one = one[(one["mean_stereo"] > 0)].copy()
         if marker_score_mode == "second":
             score_col = "marker_score_margin_second"
-        elif marker_score_mode == "rest_mean":
+        elif marker_score_mode == "rest":
             score_col = "marker_score_vs_rest_mean"
         else:
             raise ValueError(f"Unsupported marker_score_mode: {marker_score_mode}")
@@ -425,6 +431,160 @@ def compute_ref_homo_marker_scores(
         inplace=True,
     )
     return group_df, per_label_selected
+
+
+def apply_reference_label_space(
+    adata_by_key,
+    ref_key,
+    eval_key,
+    label_col,
+    mode="shared",
+    label_level="label",
+    expected_label_uns_keys=("expected_shared_labels", "expected_shared_subclass_labels"),
+):
+    """Set the transfer reference label universe and SN-evaluable label set.
+
+    `mode="shared"` keeps only labels shared by the reference and evaluator.
+    `mode="all"` keeps all reference labels and records the shared labels for
+    metrics that require an evaluator-side match.
+    """
+    if ref_key not in adata_by_key or eval_key not in adata_by_key:
+        return adata_by_key, []
+
+    ref_labels = set(adata_by_key[ref_key].obs[label_col].astype(str))
+    eval_labels = set(adata_by_key[eval_key].obs[label_col].astype(str))
+    shared = label_order(ref_labels & eval_labels)
+    if not shared:
+        raise ValueError(f"No shared {label_level} labels between {ref_key} and {eval_key}.")
+
+    shared_set = set(shared)
+    if mode == "shared":
+        for key in [ref_key, eval_key]:
+            labels = adata_by_key[key].obs[label_col].astype(str)
+            before = int(adata_by_key[key].n_obs)
+            adata_by_key[key] = adata_by_key[key][labels.isin(shared_set).to_numpy()].copy()
+            print(
+                f"[INFO] {key}: restricted to {len(shared)} shared SN {label_level} labels; "
+                f"{before} -> {adata_by_key[key].n_obs}."
+            )
+    elif mode == "all":
+        print(
+            f"[INFO] ref_label_space=all: kept all {len(ref_labels)} {ref_key} {label_level} labels; "
+            f"{len(shared)} labels are evaluable against {eval_key}."
+        )
+    else:
+        raise ValueError(f"Unsupported reference label space mode: {mode}")
+
+    for key in [ref_key, eval_key]:
+        for uns_key in expected_label_uns_keys:
+            adata_by_key[key].uns[uns_key] = list(shared)
+        adata_by_key[key].uns["ref_label_space"] = mode
+    return adata_by_key, shared
+
+
+def combine_hier_homo_marker_selections(parts, homo_col="homo_connect_id"):
+    """Merge class-level and subclass-level marker selections."""
+    per_label_selected = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    if per_label_selected.empty:
+        raise ValueError("Hierarchical marker selection produced no homo groups.")
+
+    per_label_selected.sort_values(["marker_score_active", "gene"], ascending=[False, True], inplace=True)
+    group_df = per_label_selected.drop_duplicates(homo_col, keep="first").copy()
+
+    def labels_for_group(frame):
+        labels = [
+            f"{row.marker_level}:{row.marker_label}"
+            for row in frame[["marker_level", "marker_label"]].itertuples(index=False)
+        ]
+        return ";".join(sorted(set(map(str, labels))))
+
+    labels_by_homo = per_label_selected.groupby(homo_col).apply(labels_for_group)
+    group_df["selected_by_labels"] = group_df[homo_col].map(labels_by_homo).astype(str).to_numpy()
+    group_df.sort_values(["marker_score_active", "gene"], ascending=[False, True], inplace=True)
+    group_df["homo_group_marker_rank"] = np.arange(1, len(group_df) + 1)
+    group_df.rename(
+        columns={
+            "gene": "top_ref_gene",
+            "marker_score_margin_second": "homo_group_marker_score_margin_second",
+            "marker_score_vs_rest_mean": "homo_group_marker_score_vs_rest_mean",
+            "marker_score_active": "homo_group_marker_score_active",
+            "marker_label": "homo_group_marker_best_label",
+            "marker_level": "homo_group_marker_best_level",
+            "label_marker_rank": "best_label_marker_rank",
+        },
+        inplace=True,
+    )
+    return group_df, per_label_selected
+
+
+def select_ref_homo_marker_space(
+    ref,
+    available_homo,
+    gene_dict,
+    mean_matrix,
+    topk_per_label,
+    selection_mode="subclass",
+    marker_score_mode="second",
+    min_score=0.0,
+    class_label_col="ref_class_label",
+    subclass_label_col="ref_subclass_label",
+    homo_col="homo_connect_id",
+):
+    """Select reference marker homo groups for subclass or hierarchical transfer."""
+    if selection_mode == "subclass":
+        selected_groups, per_label_selected = compute_ref_homo_marker_scores(
+            ref,
+            subclass_label_col,
+            available_homo,
+            gene_dict,
+            mean_matrix,
+            topk_per_label,
+            min_score=min_score,
+            marker_score_mode=marker_score_mode,
+            homo_col=homo_col,
+        )
+        per_label_selected["marker_level"] = "subclass"
+        return selected_groups, per_label_selected
+
+    if selection_mode != "hier":
+        raise ValueError(f"Unsupported marker selection mode: {selection_mode}")
+
+    _, class_selected = compute_ref_homo_marker_scores(
+        ref,
+        class_label_col,
+        available_homo,
+        gene_dict,
+        mean_matrix,
+        topk_per_label,
+        min_score=min_score,
+        marker_score_mode=marker_score_mode,
+        homo_col=homo_col,
+    )
+    class_selected["marker_level"] = "class"
+
+    subclass_parts = []
+    class_labels = ref.obs[class_label_col].astype(str)
+    for class_label in sorted(pd.unique(class_labels)):
+        mask = (class_labels == class_label).to_numpy()
+        subclass_labels = ref.obs.loc[mask, subclass_label_col].astype(str)
+        if subclass_labels.nunique() < 2:
+            continue
+        _, one_subclass_selected = compute_ref_homo_marker_scores(
+            ref[mask].copy(),
+            subclass_label_col,
+            available_homo,
+            gene_dict,
+            mean_matrix,
+            topk_per_label,
+            min_score=min_score,
+            marker_score_mode=marker_score_mode,
+            homo_col=homo_col,
+        )
+        one_subclass_selected["marker_level"] = "subclass"
+        one_subclass_selected["parent_class_label"] = str(class_label)
+        subclass_parts.append(one_subclass_selected)
+
+    return combine_hier_homo_marker_selections([class_selected] + subclass_parts, homo_col=homo_col)
 
 
 def sample_cells_by_label(adata, label_col, max_cells_per_label, seed=0):
