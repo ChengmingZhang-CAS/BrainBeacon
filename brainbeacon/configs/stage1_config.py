@@ -47,6 +47,7 @@ stage1_config = {
     'use_gene_deviation': True,
     'use_cell_density': True,
     'use_dev_abs': True,
+    'radius_map': 'pretrain',
     "comp_scale": {},
     "comp_scale": {},  # optional: {"gid": 1.0, "homo": 1.0, "rna": 1.0, "esm": 1.0, "dev": 1.0, "pos": 1.0}
     'cd_weight': 0.02,

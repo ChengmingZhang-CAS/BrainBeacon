@@ -52,6 +52,13 @@ platform_radius_map = {
     "STEREO": 200,
 }
 
+platform_radius_map_recommended = {
+    "STARMAP": 40,
+    "MERFISH": 150,
+    "SLIDESEQV2": 40,
+    "XENIUM": 10,
+    "STEREO": 200,
+}
 assay_alias_map = {
     "merfish": "merfish",
     "xenium": "xenium",
@@ -803,6 +810,7 @@ def standardize_adata_obs(
         species: str,
         assay: str,
         cell_density: bool = True,
+        radius_map: str = "pretrain",
 ) -> tuple[ad.AnnData, np.ndarray]:
     """
     Standardize the observation (obs) attributes of an AnnData object and align it with a gene dictionary.
@@ -841,9 +849,18 @@ def standardize_adata_obs(
         time0 = time.time()
         platform_name = assay_to_platform_name(assay)
         adata = convert_spatial_to_um(adata, platform_name)
-        if platform_name not in platform_radius_map:
+
+        if radius_map == "pretrain":
+            selected_radius_map = platform_radius_map
+        elif radius_map == "recommended":
+            selected_radius_map = platform_radius_map_recommended
+        else:
+            raise ValueError("radius_map must be one of {'pretrain', 'recommended'}")
+
+        if platform_name not in selected_radius_map:
             raise KeyError(f"Unsupported assay/platform for density token: {assay}")
-        radius = platform_radius_map[platform_name]
+        radius = selected_radius_map[platform_name]
+
         adata, _ = compute_density_token(adata, radius_um=radius, n_bins=5)
         density_map = {i: cell_density_bin_dict[f"cell_density_bin_{i}"] for i in range(5)}
         adata.obs["density_token"] = adata.obs["density_token"].map(density_map).astype(int)
@@ -1065,7 +1082,7 @@ def tokenize_adata_in_memory(
     gene_niche: bool = True,
     spatial_imputation: bool = False,
     use_mean_norm: bool = True,
-
+    radius_map: str = "pretrain",
 ) -> dict:
     """
     Tokenize an AnnData object entirely in memory (no disk I/O).
@@ -1092,6 +1109,10 @@ def tokenize_adata_in_memory(
         Minimum cells per gene.
     cell_density : bool, default=True
         Whether to compute density token.
+    radius_map : str, default="pretrain"
+        Which platform radius map to use for density token calculation.
+        Use "pretrain" for the pretraining/Fig. 2 defaults or "recommended"
+        for the downstream recommended radii.
     gene_niche : bool, default=True
         Whether to compute deviation / niche token.
     spatial_imputation : bool, default=False
@@ -1160,6 +1181,7 @@ def tokenize_adata_in_memory(
         species,
         normalized_assay,
         cell_density,
+        radius_map,
     )
 
     # ====== Required brain region columns ======

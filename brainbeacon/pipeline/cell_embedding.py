@@ -953,6 +953,7 @@ def run_bb_inference_fast(
     use_gene_deviation = config_train.get("use_gene_deviation", True)
     use_mean_norm = config_train.get("use_mean_norm", True)
     hvg_log1p = config_train.get("hvg_log1p", False)
+    radius_map = config_train.get("radius_map", "pretrain")
 
     token_dict = tokenize_adata_in_memory(
         adata,
@@ -966,6 +967,7 @@ def run_bb_inference_fast(
         gene_niche=use_gene_deviation,
         use_mean_norm=use_mean_norm,
         hvg_log1p=hvg_log1p,
+        radius_map=radius_map,
     )
     print(
         f"[Stage1 memory] Tokenization done: "
