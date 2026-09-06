@@ -11,16 +11,16 @@
 
 ## Overview
 
-Understanding the brain’s cellular architecture across species is fundamental to neuroscience, yet spatial transcriptomics data remain highly fragmented across organisms and technologies. BrainBeacon addresses this challenge by introducing a cross-species foundation model trained on a large-scale spatial brain atlas (BrainST-133M), comprising over 133 million spatially resolved cells from whole brains of human, macaque, marmoset, and mouse across multiple spatial transcriptomics platforms.
+Understanding the brain’s cellular architecture across species is fundamental to neuroscience, yet spatial transcriptomics data remain fragmented across organisms and technologies. BrainBeacon addresses this challenge through a brain-specific foundation model pretrained on BrainST-144M, a large-scale spatial brain atlas comprising 144,263,383 quality-controlled spatial observations from human, macaque, marmoset, and mouse brain datasets across MERFISH, Xenium, STARmap, Slide-seqV2, and Stereo-seq.
 
-BrainBeacon adopts a dual-stage transformer architecture to learn unified molecular–spatial representations by jointly modeling intra-cellular gene expression organization and inter-cellular spatial interactions. The learned representations support zero-shot spatial clustering and can be fine-tuned for downstream tasks such as cross-species label transfer and in silico niche perturbation, including gene-driven perturbation (GNP) and cell-driven niche perturbation (CNP).
+BrainBeacon uses a dual-stage Transformer architecture that first models intra-cellular transcriptional dependencies and then captures inter-cellular spatial context within tissue sections. Its tokenization combines ranked gene expression, gene-wise spatial deviation, local cell density, and molecular and cross-species priors. The resulting representations support zero-shot clustering and reference-guided annotation, cell-type label transfer within and across species, and representation-based virtual perturbation through gene knockout, gene overexpression, and regulon-level knockout.
 
 <p align="center">
   <img src="./docs/_static/overview.png" width="100%" />
 </p>
 
-**Overview of the BrainBeacon framework and downstream applications.**  
-The framework integrates large-scale cross-species spatial brain atlases with a structured tokenization of spatial transcriptomics data, capturing sample metadata, intra-cell gene-rank information, and inter-cell spatial cues derived from local neighborhoods. A dual-stage transformer architecture models gene-level relations within cells and spatial dependencies among cells within tissue slices, enabling diverse downstream applications including spatial clustering, annotation, cross-species label transfer, and in silico niche perturbation.
+**Overview of the BrainBeacon pretraining corpus, dual-stage architecture, and downstream applications.**  
+BrainBeacon integrates large-scale cross-species spatial brain atlases with structured tokenization of spatial transcriptomics data. The intra-cell Transformer models gene-level relationships within cells, and the inter-cell Transformer models spatial dependencies among cells within tissue sections. Downstream applications include clustering, reference-guided annotation, cross-species label transfer, and representation-based virtual perturbation.
 
 
 ## Installation
@@ -49,26 +49,38 @@ pip install -e .
 Full documentation is available at:
 [https://brainbeacon.readthedocs.io](https://brainbeacon.readthedocs.io)
 
-The documentation includes installation instructions, API references, and step-by-step tutorials for downstream tasks such as cell embedding, cross-species label transfer, and in silico niche perturbation.
+The documentation includes installation instructions, API references, and tutorials for cell embedding and downstream analysis. Tutorials for the revised label-transfer and virtual-perturbation workflows are being updated.
 
 
 ## Data and Pretrained Weights
 
 ### Data overview
 
-A summary of the spatial transcriptomics datasets used for training and evaluation is provided as a tabulated overview, including species, platforms, and cell counts.
+A summary of the spatial transcriptomics datasets used for pretraining and evaluation is provided in Supplementary Table S1, including species, platforms, and cell counts.
 
-Detailed dataset statistics are provided as supplementary materials and are available via an external data repository (see Supplementary Table S1).
+Processed example data and supporting resources will be deposited on Zenodo. The permanent record link will be added here after the deposition is finalized.
 
 ### Pretrained weights
 
-Pretrained model weights and checkpoints can be downloaded from this Google Drive folder: https://drive.google.com/drive/folders/11d2xn1ZysKiqmjVEy_H8GAaT-GDwuERL?usp=drive_link
+Pretrained BrainBeacon checkpoints will be distributed through Zenodo. The permanent record link will be added here after the deposition is finalized.
 
-This folder contains the following three files:
+The release contains the following checkpoints:
 
-	•	cellformer.config.json
-	•	epoch_0_step_8000000.pt
-	•	cellformer_epoch99.pt
+- `stage1_fix_step_800000.pt`
+- `stage2_ep280_200.pt`
+
+Download both files and place them directly in the `pretrained/` directory:
+
+```text
+BrainBeacon/
+├── brainbeacon/
+├── pretrained/
+│   ├── stage1_fix_step_800000.pt
+│   └── stage2_ep280_200.pt
+└── ...
+```
+
+The checkpoint files are not included in the GitHub repository because of their file sizes. The gene dictionary required for tokenization is provided at `prior_knowledge/gene_dict.h5ad`.
 
 
 ## Citation
