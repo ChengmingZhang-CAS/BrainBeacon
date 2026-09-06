@@ -4,7 +4,7 @@
 [![Documentation][badge-docs]][documentation]
 
 [badge-tests]: https://img.shields.io/github/actions/workflow/status/ChengmingZhang-CAS/BrainBeacon/test.yaml?branch=main
-[badge-docs]: https://img.shields.io/readthedocs/BrainBeacon
+[badge-docs]: https://img.shields.io/readthedocs/brainbeacon
 
 *🧠 A cross-species foundation model for single-cell–resolved brain spatial transcriptomics*
 
