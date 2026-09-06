@@ -120,17 +120,18 @@ class NBDenoisingLoss(nn.Module):
 class NBReconstructionLoss(nn.Module):
     """NB loss class."""
 
-    def __init__(self, dae=True, **kwargs):
+    def __init__(self, dae=False, **kwargs):
         super().__init__()
         self.dae = dae
 
     def forward(self, out_dict, x_dict):
         eps = 1e-10
 
-        y = x_dict['x_seq'].to_dense()
-        truth = y[:, x_dict['gene_mask']]
-        mean = out_dict['mean'][:, x_dict['gene_mask']]
-        disp = out_dict['disp'][:, x_dict['gene_mask']]
+        # y = x_dict['x_seq'].to_dense()
+        # truth = y[:, x_dict['input_gene_mask']]
+        truth = x_dict['x_seq'].to_dense()
+        mean = out_dict['mean'][:, x_dict['input_gene_mask']]
+        disp = out_dict['disp'][:, x_dict['input_gene_mask']]
         masked_nodes = x_dict['input_mask'].sum(1)>0
 
         if self.dae and self.training:
@@ -149,6 +150,7 @@ class NBReconstructionLoss(nn.Module):
         mean = mean[masked_nodes]
         disp = disp[masked_nodes]
         mean = mean / mean.sum(1, keepdim=True) * truth.sum(1, keepdim=True)
+        out_dict['pred'] = mean
 
         t1 = torch.lgamma(disp + eps) + torch.lgamma(truth + 1.0) - torch.lgamma(truth + disp + eps)
         t2 = (disp + truth) * torch.log(1.0 + (mean / (disp + eps))) + (truth * (torch.log(disp + eps) - torch.log(mean + eps)))

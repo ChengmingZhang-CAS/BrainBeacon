@@ -1,20 +1,21 @@
 Pretrained Weights for BrainBeacon
 
-This folder contains download instructions for pretrained model checkpoints.
+This folder contains download instructions for the pretrained BrainBeacon checkpoints.
 
-Please download the following files manually from the provided link (Zenodo or other hosting):
+Please download the following files from the provided link (Zenodo or other hosting):
 
-1. epoch_0_step_800000_0.33B.pt
-2. cellformer_epoch99.pt
+1. stage1_fix_step_800000.pt
+2. stage2_ep280_200.pt
 
-Place these files under the "pretrained/" directory before running inference or fine-tuning.
+Place both files directly in the "pretrained/" directory before running inference or fine-tuning.
 
-Example:
+Expected directory structure:
+
 BrainBeacon/
-├── model/
+├── brainbeacon/
 ├── pretrained/
-│   ├── epoch_0_step_800000_0.33B.pt
-│   └── cellformer_epoch99.pt
+│   ├── stage1_fix_step_800000.pt
+│   └── stage2_ep280_200.pt
 └── ...
 
-These files are not included in the repository due to size limits.
+These checkpoint files are not included in the GitHub repository because of their file sizes.

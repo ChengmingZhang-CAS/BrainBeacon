@@ -3,6 +3,7 @@ from torch import nn
 from ..utils import create_norm
 import math
 
+
 def select_pe_encoder(pe):
     if pe in ['sin', 'sinu', 'sinusoidal']:
         return Sinusoidal2dPE
@@ -132,10 +133,6 @@ class GraphLapPE(nn.Module):
             return self.missing_pe.unsqueeze(0).expand(eigvec.shape[0], -1)
         eigvec = eigvec * (torch.randint(0, 2, (self.k, ), dtype=torch.float, device=eigvec.device)[None, :]*2-1)
         return self.pe_enc(eigvec)
-
-import torch
-from torch import nn
-import math
 
 
 class Fourier2dPE(nn.Module):

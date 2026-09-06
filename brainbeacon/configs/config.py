@@ -1,4 +1,4 @@
-specie_dict = {
+species_dict = {
     'human': 3,
     'mouse': 4,
     'macaque': 5,
@@ -28,7 +28,7 @@ cell_density_bin_dict = {
     "cell_density_bin_3": 18,
     "cell_density_bin_4": 19,
 }
-MAX_LENGTH = 4096
+MAX_LENGTH = 1000
 AUX_TOKEN = 20
 
 DEFAULT_PATHS = {
@@ -36,7 +36,8 @@ DEFAULT_PATHS = {
     "BASE_DIR": "/raid/zhangchengming/BrainBeacon-master",
     "PRETRAIN_DIR": "/raid/zhangchengming/BrainBeacon-master/pretrained",
     "PRIOR_DIR": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge",
-    "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/model_h5ad_1211.h5ad",
+    # "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/model_h5ad_1211.h5ad",
+    "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/gene_dict.h5ad",
     "GENE_LOOKUP_DIR": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/gene_lookup",
     "ESM_EMBED_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/esm2_embeddings_d5120.pt",
 }

@@ -7,7 +7,8 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 from copy import deepcopy
 from ..utils.eval import downstream_eval, aggregate_eval_results, imputation_eval
-from ..utils.data import XDict, TranscriptomicDataset
+from ..utils.data import XDict, TranscriptomicDataset, make_spatial_neighbors, SPATIAL_PLATFORM_LIST
+from ..utils.mask import sample_knn_neighbors, build_spatial_cell_idx
 from typing import List, Literal, Union
 from .experimental import symbol_to_ensembl
 from torch.utils.data import DataLoader
@@ -17,7 +18,7 @@ from sklearn.metrics.cluster import adjusted_rand_score, normalized_mutual_info_
 import scipy.sparse
 
 ReconstructDefaultModelConfig = {
-    'objective': 'imputation',
+    'objective': 'imputation',  # imputation
     'mask_node_rate': 0.95,
     'mask_feature_rate': 0.25,
     'max_batch_size': 5000,
@@ -30,11 +31,15 @@ ReconstructDefaultPipelineConfig = {
     'scheduler': 'plat',
     'epochs': 100,
     'max_eval_batch_size': 5000,
+    'use_patch': True,
+    'halo_ratio': 0.2,
     'patience': 5,
     'workers': 0,
 }
 
-def inference(model, dataloader, split, device, batch_size, order_required=False, output_attentions=False):
+
+def inference(model, dataloader, split, device, batch_size, order_required=False, use_knn=False, knn_k=5, center_ratio=0.5,
+              truncate_context=True, output_attentions=False):
     if order_required and split:
         warnings.warn('When cell order required to be preserved, dataset split will be ignored.')
 
@@ -53,36 +58,75 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                 idx = torch.tensor(np.where(split_mask)[0])
             else:
                 idx = torch.arange(data_dict['x_seq'].shape[0])
+            if use_knn and len(idx) > batch_size:
+                coord = data_dict['coord'][idx]  # or data_dict['spatial'][idx]
+                patch_list = make_spatial_neighbors(
+                    coord=coord,
+                    max_full_size=batch_size,
+                    knn_k=knn_k,
+                    # center_ratio=None,  # center
+                    # truncate_context=False,
+                    center_ratio=center_ratio,
+                    truncate_context=truncate_context,
+                    min_context_per_center=1,
+                )
 
-            for j in range(0, len(idx), batch_size):
-                if len(idx) - j < batch_size:
-                    cur = idx[j:]
-                else:
-                    cur = idx[j:j + batch_size]
-                input_dict = {}
-                for k in data_dict:
-                    if k == 'x_seq':
-                        input_dict[k] = data_dict[k].index_select(0, cur).to(device)
-                    elif k == 'gene_mask':
-                        input_dict[k] = data_dict[k].to(device)
-                    elif k not in ['gene_list', 'split']:
-                        input_dict[k] = data_dict[k][cur].to(device)
-                x_dict = XDict(input_dict)
-                out_dict, loss = model(x_dict, data_dict['gene_list'], output_attentions=output_attentions)
-                epoch_loss.append(loss.item())
-                # pred.append(out_dict['pred'])
-                # latent.append(out_dict['latent'])
-                pred.append(out_dict['pred'].cpu())     # prevent OOM
-                latent.append(out_dict['latent'].cpu()) # prevent OOM
-                if output_attentions and 'attention' in out_dict:
-                    # Extract per-layer attention, shape: List[Tensor(seq_len, seq_len)]
-                    attn_per_batch = [attn[0].mean(0).cpu() for attn in out_dict['attention']]
-                    # Stack into a single tensor: [n_layers, seq_len, seq_len]
-                    attn_tensor = torch.stack(attn_per_batch, dim=0)
-                    attention_list.append(attn_tensor)
+                for patch in patch_list:
+                    cur = idx[patch['full_idx']]
+                    center_mask = patch['center_mask']
+                    center_idx = idx[patch['center_idx']]
 
-                if order_required:
-                    order_list.append(input_dict['order_list'])
+                    input_dict = {}
+                    for k in data_dict:
+                        if k == 'x_seq':
+                            input_dict[k] = data_dict[k].index_select(0, cur).to(device)
+                        elif k == 'gene_mask':
+                            input_dict[k] = data_dict[k].to(device)
+                        elif k not in ['gene_list', 'split']:
+                            input_dict[k] = data_dict[k][cur].to(device)
+
+                    x_dict = XDict(input_dict)
+                    out_dict, loss = model(x_dict, data_dict['gene_list'], output_attentions=output_attentions)
+                    epoch_loss.append(loss.item())
+
+                    pred.append(out_dict['pred'][center_mask].cpu())
+                    latent.append(out_dict['latent'][center_mask].cpu())
+
+                    if output_attentions and 'attention' in out_dict:
+                        pass  # patch mode attention can be handled later
+
+                    if order_required:
+                        order_list.append(data_dict['order_list'][center_idx].cpu())
+            else:
+                for j in range(0, len(idx), batch_size):
+                    if len(idx) - j < batch_size:
+                        cur = idx[j:]
+                    else:
+                        cur = idx[j:j + batch_size]
+                    input_dict = {}
+                    for k in data_dict:
+                        if k == 'x_seq':
+                            input_dict[k] = data_dict[k].index_select(0, cur).to(device)
+                        elif k == 'gene_mask':
+                            input_dict[k] = data_dict[k].to(device)
+                        elif k not in ['gene_list', 'split']:
+                            input_dict[k] = data_dict[k][cur].to(device)
+                    x_dict = XDict(input_dict)
+                    out_dict, loss = model(x_dict, data_dict['gene_list'], output_attentions=output_attentions)
+                    epoch_loss.append(loss.item())
+                    # pred.append(out_dict['pred'])
+                    # latent.append(out_dict['latent'])
+                    pred.append(out_dict['pred'].cpu())     # prevent OOM
+                    latent.append(out_dict['latent'].cpu()) # prevent OOM
+                    if output_attentions and 'attention' in out_dict:
+                        # Extract per-layer attention, shape: List[Tensor(seq_len, seq_len)]
+                        attn_per_batch = [attn[0].mean(0).cpu() for attn in out_dict['attention']]
+                        # Stack into a single tensor: [n_layers, seq_len, seq_len]
+                        attn_tensor = torch.stack(attn_per_batch, dim=0)
+                        attention_list.append(attn_tensor)
+
+                    if order_required:
+                        order_list.append(input_dict['order_list'].cpu())
         torch.cuda.empty_cache()
         pred = torch.cat(pred)
         latent = torch.cat(latent)
@@ -124,40 +168,36 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
         return result
 
 class ReconstructPipeline(Pipeline):
-    def __init__(self,
-                 pretrain_prefix: str,
-                 overwrite_config: dict = ReconstructDefaultModelConfig,
-                 pretrain_directory: str = './ckpt',
-                 bb_pretrain_path: str = None,
-                 cellformer_pretrain_path: str = None,
-                 path_dict: dict = None,
-                 use_pretrain: bool = True,
-                 ):
+    def __init__(
+            self,
+            config: dict | None = None,
+            stage1_ckpt_path: str = None,
+            stage2_ckpt_path: str = None,
+            use_pretrain: bool = True,
+    ):
         super().__init__(
-            pretrain_prefix=pretrain_prefix,
-            overwrite_config=overwrite_config,
-            pretrain_directory=pretrain_directory,
-            bb_pretrain_path=bb_pretrain_path,
-            cellformer_pretrain_path=cellformer_pretrain_path,
-            path_dict = path_dict,
-            use_pretrained=use_pretrain
+            config=config,
+            stage1_ckpt_path=stage1_ckpt_path,
+            stage2_ckpt_path=stage2_ckpt_path,
+            use_pretrain=use_pretrain,
         )
         self.label_encoders = None
 
     def fit(self, adata: ad.AnnData,
-            train_config: dict = None,
+            config_override: dict = None,
             split_field: str = None,
             train_split: str = 'train',
             valid_split: str = 'valid',
             covariate_fields: List[str] = None,
             label_fields: List[str] = None,
             batch_gene_list: dict = None,
+            covariate_encoders: dict = None,
             ensembl_auto_conversion: bool = True,
             device: Union[str, torch.device] = 'cpu',
             ):
         config = ReconstructDefaultPipelineConfig.copy()
-        if train_config:
-            config.update(train_config)
+        if config_override:
+            config.update(config_override)
         torch.cuda.empty_cache()
         self.model.to(device)
         assert not self.fitted, 'Current pipeline is already fitted and does not support continual training. Please initialize a new pipeline.'
@@ -166,7 +206,15 @@ class ReconstructPipeline(Pipeline):
         # adata = ad.concat([query_data, reference_data], join='outer', label='ref', keys=[False, True])
         adata = self.common_preprocess(adata, 0, covariate_fields, ensembl_auto_conversion=False)
         print(f'After filtering, {adata.shape[1]} genes remain.')
-        dataset = TranscriptomicDataset(adata, split_field, covariate_fields, label_fields, batch_gene_list)
+        # dataset = TranscriptomicDataset(adata, split_field, covariate_fields, label_fields, batch_gene_list)
+        dataset = TranscriptomicDataset(
+            adata=adata,
+            split_field=split_field,
+            covariate_fields=covariate_fields,
+            label_fields=label_fields,
+            batch_gene_list=batch_gene_list,
+            covariate_encoders=covariate_encoders,
+        )
         dataloader = DataLoader(dataset, batch_size=None, shuffle=True, num_workers=config['workers'])
         optim = torch.optim.AdamW(self.model.parameters(), lr=config['lr'], weight_decay=config['wd'])
 
@@ -207,7 +255,7 @@ class ReconstructPipeline(Pipeline):
             if config['scheduler'] == 'plat':
                 scheduler.step(train_loss[-1])
             result_dict = inference(self.model, dataloader, valid_split, device,
-                                    config['max_eval_batch_size'])
+                                    config['max_eval_batch_size'], use_knn=False, knn_k=5)
             valid_loss.append(result_dict['loss'])
 
             print(f'Epoch {epoch} | Train loss: {train_loss[-1]:.4f} | Valid loss: {valid_loss[-1]:.4f}')
@@ -241,8 +289,9 @@ class ReconstructPipeline(Pipeline):
         print(f'After filtering, {adata.shape[1]} genes remain.')
         dataset = TranscriptomicDataset(adata, None, order_required=True)
         dataloader = DataLoader(dataset, batch_size=None, shuffle=False, num_workers=0)
-        output = inference(self.model, dataloader, None, device,
-                  config['max_eval_batch_size'], order_required=True, output_attentions=output_attentions)
+        output = inference(self.model, dataloader, None, device, config['max_eval_batch_size'], order_required=True,
+                           use_knn=config['use_patch'], knn_k=config['knn_k'], center_ratio=config['center_ratio'],
+                           output_attentions=output_attentions)
         pred = output['pred']
         latent = output['latent']
         # Ensure target_genes is defined

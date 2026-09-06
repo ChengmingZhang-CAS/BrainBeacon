@@ -1,0 +1,48 @@
+# BrainBeacon training config (Small)
+# Ablation: dim_model=512, nlayers=8, nheads=8, ~134M params
+
+# Model
+dim_model: 512
+nheads: 8
+dim_feedforward: 512
+nlayers: 8
+dropout: 0.1
+n_tokens: 92076
+n_connect_comp: 46714
+n_aux: 20
+n_rna_type: 33
+num_neighbors: 4
+context_length: 1000
+
+# ESM embedding
+use_esm_embedding: true
+ems_embedding_dim: 5120
+esm_embedding_path: /raid/zhangchengming/BrainBeacon-master/prior_knowledge/esm2_embeddings_d5120.pt
+
+# Training
+batch_size: 16
+lr: 1.0e-5
+warmup: 1000
+max_epoch: 100
+total_steps: 100000
+
+# Task
+autoregressive: false
+pool: null
+supervised_task: false
+learnable_pe: true
+organ: everything
+specie: true
+assay: true
+modality: false
+contrastive: false
+neighbor_enhance: true
+gene_id: true
+
+# Paths
+root_path: /cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST
+pretrain_ckpt: null
+
+# Masking
+masking_p: 0.15
+batch_first: true

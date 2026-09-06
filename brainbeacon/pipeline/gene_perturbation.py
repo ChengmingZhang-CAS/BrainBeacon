@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
 from tqdm import tqdm
-from brainbeacon.configs.config_train import config_train
+from brainbeacon.configs.stage1_config import config_train
 from brainbeacon.brain_beacon import BrainBeacon
 from brainbeacon.configs.config import resolve_path
 import pickle

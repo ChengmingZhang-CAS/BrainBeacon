@@ -9,9 +9,9 @@ import json
 import warnings
 import scanpy as sc
 from importlib.resources import files
-from brainbeacon.configs.config import resolve_path
-from brainbeacon.configs.config_train import config_train
-
+from brainbeacon.configs.config import resolve_path, DEFAULT_PATHS
+from brainbeacon.configs.stage1_config import stage1_config
+config_train = stage1_config
 
 def extract_input_embeddings(
         bb_pretrain_path: str,
@@ -22,6 +22,10 @@ def extract_input_embeddings(
     """
     Extract combined input embeddings (gene_id + homo + rna_type + esm) from BrainBeacon checkpoint.
     """
+    if bb_pretrain_path is None:
+        raise ValueError("`stage1_ckpt_path` must not be None when `mask_type` != 'hidden'.")
+    print(f"[INFO] Loading stage1 checkpoint for input embedding init: {bb_pretrain_path}")
+
     state = torch.load(bb_pretrain_path, map_location="cpu")["model_state_dict"]
     gene_dict = sc.read_h5ad(gene_dict_path)
     gene_var = gene_dict.var
@@ -50,109 +54,84 @@ def extract_input_embeddings(
     return combined_emb
 
 def load_pretrain(
-        pretrain_prefix: str,
-        overwrite_config: dict = None,
-        pretrain_directory: str = None,
-        bb_pretrain_path: str = None,  # Path to the BrainBeacon pretrain checkpoint,
-        cellformer_pretrain_path: str = None,  # Path to the CellFormer checkpoint (optional, for backward compatibility)
-        path_dict: dict | None = None,
+        config: dict,
+        stage1_ckpt_path,
+        stage2_ckpt_path: str = None,
+        use_pretrain: bool = True,
 ):
-    pretrain_directory = resolve_path("PRETRAIN_DIR", path_dict=path_dict)
-    # config_path = os.path.join(pretrain_directory, f'cellformer.config.json')
-    config_path = files("brainbeacon.configs").joinpath("cellformer.config.json")
-    if cellformer_pretrain_path is not None:
-        final_ckpt_path = cellformer_pretrain_path
-        print(f"[INFO] Using explicitly provided CellFormer checkpoint: {final_ckpt_path}")
-    else:
-        pt_path = os.path.join(pretrain_directory, f'{pretrain_prefix}.pt')
-        ckpt_path = os.path.join(pretrain_directory, f'{pretrain_prefix}.ckpt')
-        if os.path.exists(pt_path):
-            final_ckpt_path = pt_path
-        elif os.path.exists(ckpt_path):
-            final_ckpt_path = ckpt_path
-        else:
-            raise FileNotFoundError(f"Neither {pt_path} nor {ckpt_path} found.")
-
-    if bb_pretrain_path is None:
-        print("Using default BrainBeacon pretrain path for cellformer.")
-        bb_pretrain_path = os.path.join(pretrain_directory, "epoch_6_hv.pt")
-    with open(config_path, "r") as openfile:
-        config = json.load(openfile)
-    config.update(overwrite_config)
 
     """Load gene list from model_raw h5ad file"""
-    gene_dict_path = resolve_path("GENE_DICT_PATH", path_dict=path_dict)
-    esm_embedding_path = resolve_path("ESM_EMBED_PATH", path_dict=path_dict)
-    gene_schema = sc.read_h5ad(gene_dict_path)
-    config['gene_list'] = gene_schema.var.index.tolist()
-    if 'head_type' not in config:  # 确保 head_type 存在
-        config['out_dim'] = len(config['gene_list'])
-    print("*"*10, f"gene list size: {len(config['gene_list'])}", "*"*10)
+    gene_dict_path = DEFAULT_PATHS['GENE_DICT_PATH']
+    esm_embedding_path = DEFAULT_PATHS['ESM_EMBED_PATH']
+    gene_dict = sc.read_h5ad(gene_dict_path)
+    config['gene_list'] = gene_dict.var.index.tolist()
+    gene_list_size = len(config['gene_list'])
+    if 'head_type' not in config:
+        config['out_dim'] = gene_list_size
+    print(f"[INFO] Gene list size: {gene_list_size}")
 
     if config['mask_type'] == "hidden":
-        # here just use gene_id embedding
-        bb_model_state = torch.load(bb_pretrain_path, map_location="cpu")
-        config['gene_emb'] = bb_model_state['model_state_dict']['embedding.basic_embedding.weight']
+        config['gene_emb'] = None
     else:
-        # mask type is "input"
-        bb_model_state = None
         config['gene_emb'] = extract_input_embeddings(
-            bb_pretrain_path=bb_pretrain_path,
+            bb_pretrain_path=stage1_ckpt_path,
             esm_embedding_path=esm_embedding_path,
             gene_dict_path=gene_dict_path,
-            n_aux=config_train['n_aux']
+            n_aux=config['n_aux']
         )
 
     model = OmicsFormer(**config)
-    state = torch.load(final_ckpt_path, map_location="cpu")
-    pretrained_model_dict = state['model_state_dict'] if 'model_state_dict' in state else state
-    model_dict = model.state_dict()
+    if use_pretrain and stage2_ckpt_path is not None:
+        print(f"[INFO] Loading stage2 pretrained checkpoint: {stage2_ckpt_path}")
+        state = torch.load(stage2_ckpt_path, map_location="cpu")
+        pretrained_model_dict = state['model_state_dict'] if 'model_state_dict' in state else state
+        model_dict = model.state_dict()
 
-    pretrained_dict = {
-        k: v
-        for k, v in pretrained_model_dict.items()
-        if k in model_dict and v.shape == model_dict[k].shape
-    }
-    print("*"*10, f"loading skip parameters: {model_dict.keys() - pretrained_dict.keys()}", "*"*10)
+        pretrained_dict = {
+            k: v
+            for k, v in pretrained_model_dict.items()
+            if k in model_dict and v.shape == model_dict[k].shape
+        }
+        skipped_keys = sorted(model_dict.keys() - pretrained_dict.keys())
+        print(f"[INFO] Skipped parameters ({len(skipped_keys)}): {skipped_keys}")
 
-    del bb_model_state, config['gene_emb']
-    model_dict.update(pretrained_dict)
-    model.load_state_dict(model_dict)
+        model_dict.update(pretrained_dict)
+        model.load_state_dict(model_dict)
+    else:
+        print("[INFO] use_pretrain=False, initialize OmicsFormer from config only.")
+
+    del config['gene_emb']
     return model
 
 
 def build_model_from_config(
-        pretrain_prefix: str,
-        overwrite_config: dict = None,
-        pretrain_directory: str = None):
-    config_path = os.path.join(pretrain_directory, f'{pretrain_prefix}.config.json')
-    with open(config_path, "r") as openfile:
-        config = json.load(openfile)
-    if overwrite_config is not None:
-        config.update(overwrite_config)
-
+        config: dict,
+):
     model = OmicsFormer(**config)
     return model
 
 
 class Pipeline(ABC):
-    def __init__(self,
-                 pretrain_prefix: str,
-                 overwrite_config: dict = None,
-                 pretrain_directory: str = None,
-                 bb_pretrain_path: str = None,  # Path to the BrainBeacon pretrain checkpoint
-                 cellformer_pretrain_path: str = None,
-                 path_dict: dict | None = None,
-                 use_pretrained: bool = True,
-                 ):
+    def __init__(
+            self,
+            config: dict | None = None,
+            stage1_ckpt_path: str = None,
+            stage2_ckpt_path: str = None,
+            use_pretrain: bool = True,
+    ):
         # Load pretrain model_raw
         # self.model_raw = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory)
-        if use_pretrained:
-            # Load pretrained model_raw from configs + weights
-            self.model = load_pretrain(pretrain_prefix, overwrite_config, pretrain_directory, bb_pretrain_path, cellformer_pretrain_path, path_dict=path_dict)
+        if stage1_ckpt_path is not None:
+            self.model = load_pretrain(
+                config=config,
+                stage1_ckpt_path=stage1_ckpt_path,
+                stage2_ckpt_path=stage2_ckpt_path,
+                use_pretrain=use_pretrain
+            )
         else:
+            print("[INFO] stage1_ckpt_path is None. The model will be initialized with random weights.")
             # Only build model_raw from configs, without loading weights
-            self.model = build_model_from_config(pretrain_prefix, overwrite_config, pretrain_directory)
+            self.model = load_pretrain(config=config)
         self.gene_list = None
         self.fitted = False
         self.eval_dict = {}
@@ -160,8 +139,8 @@ class Pipeline(ABC):
     def common_preprocess(self, adata, hvg, covariate_fields, ensembl_auto_conversion):
         if covariate_fields:
             for i in covariate_fields:
-                assert i in ['batch', 'dataset', 'platform'], \
-                    'Currently does not support customized covariate other than "batch", "dataset" and "platform"'
+                assert i in ['slice_cov', 'dataset_cov', 'platform_cov'], \
+                    'Currently does not support customized covariate other than "slice_cov", "dataset_cov" and "platform_cov"'
         adata = adata.copy()
         if not adata.var.index.isin(self.model.gene_set).any():
             if ensembl_auto_conversion:
