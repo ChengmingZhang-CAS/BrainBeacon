@@ -1,8 +1,8 @@
 # Pretrained Weights for BrainBeacon
 
-The pretrained BrainBeacon checkpoints are distributed as
-`brainbeacon_pretrained_checkpoints.zip` through Zenodo. The permanent Zenodo
-record and DOI will be added here after the deposition is finalized.
+**Temporary access:** Download `brainbeacon_pretrained_checkpoints.zip` using the [Zenodo draft sharing link](https://zenodo.org/records/22639522?preview=1&token=eyJhbGciOiJIUzUxMiJ9.eyJpZCI6ImI4ZGFlYzQ4LTkyZmQtNDYyZi05MTBlLTNhNzJhNWRhYzU1YSIsImRhdGEiOnt9LCJyYW5kb20iOiI2M2YwZTQ0MTViYzlhYjQxMzUwOWIxZDcwNjM0YmE4OCJ9.PhcGFCkee03U76eTOwYMIpSZkMsIRXjSTWGnnhaRfQf3F39DJEFhv23J99wEV5Wo9zVFe8VRVo1sqJ-kDUz2jw).
+
+This link provides temporary access to an unpublished Zenodo draft and may change. The permanent record link and DOI will be added here once the record is formally published.
 
 ## Checkpoints
 

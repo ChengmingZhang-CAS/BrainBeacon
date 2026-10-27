@@ -62,14 +62,16 @@ Processed example data and supporting resources will be deposited on Zenodo. The
 
 ### Pretrained weights
 
-Pretrained BrainBeacon checkpoints will be distributed through Zenodo. The permanent record link will be added here after the deposition is finalized.
+**Temporary access:** Download `brainbeacon_pretrained_checkpoints.zip` using the [Zenodo draft sharing link](https://zenodo.org/records/22639522?preview=1&token=eyJhbGciOiJIUzUxMiJ9.eyJpZCI6ImI4ZGFlYzQ4LTkyZmQtNDYyZi05MTBlLTNhNzJhNWRhYzU1YSIsImRhdGEiOnt9LCJyYW5kb20iOiI2M2YwZTQ0MTViYzlhYjQxMzUwOWIxZDcwNjM0YmE4OCJ9.PhcGFCkee03U76eTOwYMIpSZkMsIRXjSTWGnnhaRfQf3F39DJEFhv23J99wEV5Wo9zVFe8VRVo1sqJ-kDUz2jw).
 
-The release contains the following checkpoints:
+This link provides temporary access to an unpublished Zenodo draft and may change. The permanent record link and DOI will be added here once the record is formally published.
+
+The archive contains the following checkpoints:
 
 - `stage1_fix_step_800000.pt`
 - `stage2_ep280_200.pt`
 
-Download both files and place them directly in the `pretrained/` directory:
+Download and extract the archive, then place both checkpoint files directly in the `pretrained/` directory:
 
 ```text
 BrainBeacon/
