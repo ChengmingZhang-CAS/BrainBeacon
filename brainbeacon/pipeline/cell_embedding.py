@@ -371,6 +371,12 @@ class CellEmbeddingPipeline:
         try:
             ckpt = torch.load(self.pretrain_ckpt, map_location=self.device)
             pretrained_dict = ckpt["model_state_dict"]
+            # Training-only auxiliary heads (e.g. `dev_head` of the ABL19 multi-task ablation) are not part
+            # of the embedding model; drop them so the strict path below still accepts such checkpoints.
+            aux_keys = [k for k in pretrained_dict if k.startswith("dev_head.")]
+            if aux_keys:
+                pretrained_dict = {k: v for k, v in pretrained_dict.items() if k not in aux_keys}
+                print(f"Dropped {len(aux_keys)} auxiliary-head params from checkpoint: {aux_keys}")
 
             if strict_load:
                 self.model.pretrain_model.load_state_dict(pretrained_dict)

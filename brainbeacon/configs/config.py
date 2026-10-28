@@ -1,9 +1,12 @@
+from __future__ import annotations  # `dict | None` annotations below must not be evaluated on Python 3.9
+
 species_dict = {
     'human': 3,
     'mouse': 4,
     'macaque': 5,
     'marmoset': 6
 }
+specie_dict = species_dict  # legacy name used by train_ddp_sampler.py / train_ddp_continue.py
 
 technology_dict = {
     "merfish": 7,

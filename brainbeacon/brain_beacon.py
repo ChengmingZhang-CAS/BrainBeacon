@@ -264,6 +264,8 @@ class BrainBeacon(nn.Module):
             neighbor_enhance=True,  # gene deviation
             comp_scale=None,
             comp_mean_bias=None,
+            predict_deviation=False,  # ABL19: auxiliary head predicting the deviation bin at masked positions
+            n_dev_bins=6,  # 0 = no signal, 1-5 = quintile bins (matches neighbor_projection)
     ):
         super(BrainBeacon, self).__init__()
         self.use_esm_emb = use_esm_emb
@@ -305,6 +307,11 @@ class BrainBeacon(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.pos = torch.arange(0, 1000, dtype=torch.long)
         self.neighbor_enhance = neighbor_enhance
+        # Multi-task ablation (ABL19): a second linear head on the same hidden states as the MLM head.
+        # Only used by train_one_epoch(predict_deviation=True); encode() and embedding extraction are untouched.
+        self.predict_deviation = predict_deviation
+        if predict_deviation:
+            self.dev_head = nn.Linear(dim_model, n_dev_bins)
 
         self.initialize_weights()
 
@@ -519,7 +526,8 @@ class BrainBeacon(nn.Module):
         # return self.encoder(embeddings, src_key_padding_mask=attention_mask)
         return self._encode_layers(embeddings, attention_mask, output_layer)
 
-    def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution):
+    def forward(self, x_gene_id, x_connect_id, x_rna_type, attention_mask, esm_embedding, neighbor_gene_distribution,
+                return_dev=False):
         transformer_output = self.encode(
             x_gene_id,
             x_connect_id,
@@ -529,14 +537,28 @@ class BrainBeacon(nn.Module):
             neighbor_gene_distribution,
         )
         prediction = self.classifier_head(transformer_output)
+        if return_dev:
+            if not getattr(self, "predict_deviation", False):
+                raise ValueError("return_dev=True requires the model to be built with predict_deviation=True")
+            return prediction, self.dev_head(transformer_output)
         return prediction
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, writer, esm_embedding_map, global_step,
-                    logger, logdir, epoch, lr_scheduler=None, max_steps=None, accumulation_steps=1):
+                    logger, logdir, epoch, lr_scheduler=None, max_steps=None, accumulation_steps=1,
+                    mask_dev_input=False, predict_deviation=False, dev_loss_weight=1.0, dev_class_weights=None,
+                    log_every=1000):
     model.train()
     total_loss = 0.0
     accum_loss = 0.0
+    # ABL19 multi-task bookkeeping (only populated when predict_deviation=True)
+    total_mlm = 0.0
+    total_dev = 0.0
+    accum_mlm = 0.0
+    accum_dev = 0.0
+    n_dev_bins = dev_class_weights.numel() if dev_class_weights is not None else 6
+    dev_cls_total = torch.zeros(n_dev_bins, dtype=torch.long, device=device)
+    dev_cls_correct = torch.zeros(n_dev_bins, dtype=torch.long, device=device)
     scaler = GradScaler()
     optimizer.zero_grad()
     for micro_step, (masked_indices, mask, real_indices, attention_mask, connect_comp, rna_type, neighbor_gene_distribution) in \
@@ -549,7 +571,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
         rna_type = rna_type[0]
         neighbor_gene_distribution = neighbor_gene_distribution[0].long()
 
-        real_indices_view = real_indices.view(-1).long()
+        # Gather on whichever device holds the ESM table (train_ddp_continue.py keeps it on the GPU)
+        real_indices_view = real_indices.view(-1).long().to(esm_embedding_map.device)
         esm_embedding = torch.index_select(esm_embedding_map, dim=0, index=real_indices_view)
         esm_embedding = esm_embedding.view(real_indices.shape[0], real_indices.shape[1], esm_embedding.shape[-1])
 
@@ -558,14 +581,29 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
             connect_comp.to(device), rna_type.to(device), esm_embedding.to(device), real_indices.to(device), \
             neighbor_gene_distribution.to(device)
 
+        # ABL19: the deviation bin of a masked/replaced gene is hidden exactly where the gene token itself is
+        # hidden (bin 0 = "no signal"); kept-original positions stay visible, mirroring the token masking.
+        # The prediction target is always the original gene's bin.
+        dev_target = neighbor_gene_distribution
+        if mask_dev_input:
+            dev_input = neighbor_gene_distribution * (masked_indices == real_indices).long()
+        else:
+            dev_input = neighbor_gene_distribution
+
         # Skip DDP gradient sync on non-update steps for efficiency
         is_update_step = (micro_step + 1) % accumulation_steps == 0
         context = model.no_sync if (not is_update_step and hasattr(model, 'no_sync')) else nullcontext
         with context():
             with autocast():
-                mlm_predictions = model(
-                    masked_indices, connect_comp, rna_type, attention_mask, esm_embedding, neighbor_gene_distribution
-                )
+                if predict_deviation:
+                    mlm_predictions, dev_logits = model(
+                        masked_indices, connect_comp, rna_type, attention_mask, esm_embedding, dev_input,
+                        return_dev=True
+                    )
+                else:
+                    mlm_predictions = model(
+                        masked_indices, connect_comp, rna_type, attention_mask, esm_embedding, dev_input
+                    )
                 # real_indices = torch.where(mask == 1, real_indices, torch.tensor(-100, dtype=torch.long)).type(
                 #     torch.int64)
                 # real_indices = real_indices.to(device)
@@ -573,9 +611,27 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
                 mask_pos = mask == 0
                 loss = criterion(mlm_predictions[mask_pos].reshape(-1, mlm_predictions.shape[-1]),
                                  real_indices[mask_pos].reshape(-1))
+                if predict_deviation:
+                    mlm_loss = loss
+                    dev_loss = torch.nn.functional.cross_entropy(
+                        dev_logits[mask_pos].reshape(-1, dev_logits.shape[-1]).float(),
+                        dev_target[mask_pos].reshape(-1),
+                        weight=dev_class_weights,
+                        ignore_index=0,
+                    )
+                    loss = mlm_loss + dev_loss_weight * dev_loss
             scaler.scale(loss / accumulation_steps).backward()
 
         accum_loss += loss.item()
+        if predict_deviation:
+            accum_mlm += mlm_loss.item()
+            accum_dev += dev_loss.item()
+            with torch.no_grad():
+                tgt = dev_target[mask_pos].reshape(-1)
+                pred = dev_logits[mask_pos].reshape(-1, dev_logits.shape[-1]).argmax(dim=-1)
+                one_hot = torch.nn.functional.one_hot(tgt, num_classes=n_dev_bins)
+                dev_cls_total += one_hot.sum(0)
+                dev_cls_correct += (one_hot * (pred == tgt).unsqueeze(-1).long()).sum(0)
 
         if is_update_step:
             scaler.step(optimizer)
@@ -585,22 +641,53 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
             optimizer.zero_grad()
 
             total_loss += accum_loss / accumulation_steps
+            total_mlm += accum_mlm / accumulation_steps
+            total_dev += accum_dev / accumulation_steps
             global_step += 1
             if rank == 0:
                 print(f"loss {accum_loss / accumulation_steps:.4f}")
 
             accum_loss = 0.0
+            accum_mlm = 0.0
+            accum_dev = 0.0
 
             # Logging and checkpointing
             if rank == 0:
-                if global_step % 1000 == 0:
-                    avg_loss = total_loss / 1000
+                if global_step % log_every == 0:
+                    avg_loss = total_loss / log_every
                     print(f"Step {global_step}, Avg Loss: {avg_loss:.4f}")
+                    msg = f"Step {global_step}, Avg Loss: {avg_loss:.4f}"
                     if writer:
                         writer.add_scalar("Loss/Step", avg_loss, global_step)
+                    if predict_deviation:
+                        avg_mlm = total_mlm / log_every
+                        avg_dev = total_dev / log_every
+                        cls_total = dev_cls_total[1:].float()  # bin 0 is never a target (ignore_index)
+                        cls_correct = dev_cls_correct[1:].float()
+                        dev_acc = (cls_correct.sum() / cls_total.sum().clamp(min=1)).item()
+                        present = cls_total > 0
+                        if bool(present.any()):
+                            dev_bal_acc = (cls_correct[present] / cls_total[present]).mean().item()
+                        else:
+                            dev_bal_acc = float("nan")
+                        msg += (f", MLM: {avg_mlm:.4f}, Dev: {avg_dev:.4f}, DevAcc: {dev_acc:.4f}, "
+                                f"DevBalAcc: {dev_bal_acc:.4f}")
+                        if writer:
+                            writer.add_scalar("Loss/MLM", avg_mlm, global_step)
+                            writer.add_scalar("Loss/Dev", avg_dev, global_step)
+                            writer.add_scalar("Acc/Dev", dev_acc, global_step)
+                            writer.add_scalar("Acc/DevBalanced", dev_bal_acc, global_step)
+                            for c in range(1, n_dev_bins):
+                                if cls_total[c - 1] > 0:
+                                    writer.add_scalar(f"Acc/Dev_bin{c}",
+                                                      (cls_correct[c - 1] / cls_total[c - 1]).item(), global_step)
+                        total_mlm = 0.0
+                        total_dev = 0.0
+                        dev_cls_total.zero_()
+                        dev_cls_correct.zero_()
                     if logger:
                         current_lr = optimizer.param_groups[0]["lr"]
-                        logger.info(f"Step {global_step}, Avg Loss: {avg_loss:.4f}, LR: {current_lr:.2e}")
+                        logger.info(f"{msg}, LR: {current_lr:.2e}")
                     total_loss = 0.0
                 if global_step % 10000 == 0:
                     checkpoint_path = os.path.join(logdir, f"epoch_{epoch}_step_{global_step}.pt")
@@ -628,6 +715,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
             lr_scheduler.step()
         optimizer.zero_grad()
         total_loss += accum_loss / accumulation_steps
+        total_mlm += accum_mlm / accumulation_steps
+        total_dev += accum_dev / accumulation_steps
         global_step += 1
 
     return total_loss / max(len(dataloader) // accumulation_steps, 1), global_step
