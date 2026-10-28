@@ -85,9 +85,15 @@ def _compute_spatial_knn_indices(spatial, n_neighbors=6, algorithm="auto"):
         algorithm=algorithm,
     )
     nbrs.fit(spatial)
-    indices = nbrs.kneighbors(return_distance=False)
-
-    knn_indices = indices[:, 1:]
+    # Passing the fitted coordinates explicitly includes each query point itself.
+    # Remove that exact row index rather than blindly discarding column 0, which
+    # is also correct when multiple cells share identical coordinates.
+    indices = nbrs.kneighbors(spatial, return_distance=False)
+    requested_neighbors = k - 1
+    knn_indices = np.asarray(
+        [row[row != row_idx][:requested_neighbors] for row_idx, row in enumerate(indices)],
+        dtype=indices.dtype,
+    )
     if knn_indices.shape[1] == 0:
         return None
 

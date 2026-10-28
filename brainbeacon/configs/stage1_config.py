@@ -53,7 +53,7 @@ stage1_config = {
     'cd_weight': 0.02,
     # 'root_path': '/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST',
     'esm_emb_dim': 5120,
-    # 'esm_embedding_path': '/raid/zhangchengming/BrainBeacon-master/prior_knowledge/esm2_embeddings_d5120.pt',
+    # 'esm_embedding_path': '/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/esm2_embeddings_d5120.pt',
     'pretrain_ckpt': None,
     # 'gene_id': True,
 

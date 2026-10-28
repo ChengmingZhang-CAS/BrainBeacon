@@ -963,6 +963,7 @@ def run_bb_inference_fast(
         use_hvg=use_hvg,
         n_hvg=n_hvg,
         use_dev_abs=use_dev_abs,
+        min_genes=config_train.get("tokenizer_min_genes", 3),
         cell_density=use_cell_density,
         gene_niche=use_gene_deviation,
         use_mean_norm=use_mean_norm,
@@ -1575,6 +1576,7 @@ def run_stage2_pipeline(
         'use_patch': config.get("eval_use_patch", True),
         'knn_k': config.get("eval_knn_k", 5),
         'center_ratio': config.get("eval_center_ratio", 0.5),
+        'return_pred': config.get("return_pred", True),
     }
     result = pipeline.predict(
         data,
@@ -1590,7 +1592,8 @@ def run_stage2_pipeline(
     data = data[:, target_genes].copy()  # now data.var.index == target_genes
 
     data.obsm['X_emb'] = latent.cpu().numpy()  # Store embeddings in AnnData object
-    data.obsm['X_pred'] = pred.cpu().numpy()  # Store predicted gene
+    if pred is not None:
+        data.obsm['X_pred'] = pred.cpu().numpy()  # Store predicted genes when requested
     # if output_attentions and attention is not None:
     #     data.uns['attention'] = attention.cpu().numpy()
 

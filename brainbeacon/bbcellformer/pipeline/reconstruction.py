@@ -35,11 +35,12 @@ ReconstructDefaultPipelineConfig = {
     'halo_ratio': 0.2,
     'patience': 5,
     'workers': 0,
+    'return_pred': True,
 }
 
 
 def inference(model, dataloader, split, device, batch_size, order_required=False, use_knn=False, knn_k=5, center_ratio=0.5,
-              truncate_context=True, output_attentions=False):
+              truncate_context=True, output_attentions=False, return_pred=True):
     if order_required and split:
         warnings.warn('When cell order required to be preserved, dataset split will be ignored.')
 
@@ -48,7 +49,7 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
         epoch_loss = []
         order_list = []
         latent = []
-        pred = []
+        pred = [] if return_pred else None
         attention_list = [] if output_attentions else None
         for i, data_dict in enumerate(dataloader):
             if not order_required and split:
@@ -89,7 +90,8 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                     out_dict, loss = model(x_dict, data_dict['gene_list'], output_attentions=output_attentions)
                     epoch_loss.append(loss.item())
 
-                    pred.append(out_dict['pred'][center_mask].cpu())
+                    if return_pred:
+                        pred.append(out_dict['pred'][center_mask].cpu())
                     latent.append(out_dict['latent'][center_mask].cpu())
 
                     if output_attentions and 'attention' in out_dict:
@@ -116,7 +118,8 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                     epoch_loss.append(loss.item())
                     # pred.append(out_dict['pred'])
                     # latent.append(out_dict['latent'])
-                    pred.append(out_dict['pred'].cpu())     # prevent OOM
+                    if return_pred:
+                        pred.append(out_dict['pred'].cpu())  # prevent GPU OOM
                     latent.append(out_dict['latent'].cpu()) # prevent OOM
                     if output_attentions and 'attention' in out_dict:
                         # Extract per-layer attention, shape: List[Tensor(seq_len, seq_len)]
@@ -128,7 +131,8 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
                     if order_required:
                         order_list.append(input_dict['order_list'].cpu())
         torch.cuda.empty_cache()
-        pred = torch.cat(pred)
+        if return_pred:
+            pred = torch.cat(pred)
         latent = torch.cat(latent)
 
         if order_required:
@@ -136,12 +140,13 @@ def inference(model, dataloader, split, device, batch_size, order_required=False
             # order.scatter_(0, order.clone(), torch.arange(order.shape[0]).to(order.device))
             order = torch.cat(order_list).cpu()  # cpu
             order.scatter_(0, order.clone(), torch.arange(order.shape[0]))  # not.to(device)
-            pred = pred[order]
+            if return_pred:
+                pred = pred[order]
             latent = latent[order]
 
         if output_attentions and attention_list is not None:
             n_layers = attention_list[0].shape[0]
-            total_cells = pred.shape[0]
+            total_cells = latent.shape[0]
 
             # Initialize attention tensor
             attention = torch.zeros((n_layers, total_cells, total_cells), dtype=attention_list[0].dtype)
@@ -291,7 +296,7 @@ class ReconstructPipeline(Pipeline):
         dataloader = DataLoader(dataset, batch_size=None, shuffle=False, num_workers=0)
         output = inference(self.model, dataloader, None, device, config['max_eval_batch_size'], order_required=True,
                            use_knn=config['use_patch'], knn_k=config['knn_k'], center_ratio=config['center_ratio'],
-                           output_attentions=output_attentions)
+                           output_attentions=output_attentions, return_pred=config['return_pred'])
         pred = output['pred']
         latent = output['latent']
         # Ensure target_genes is defined
@@ -302,10 +307,11 @@ class ReconstructPipeline(Pipeline):
 
         # Apply target gene mask
         target_genes = inference_config["target_genes"]
-        target_mask = torch.tensor(
-            [adata.var.index.get_loc(g) for g in target_genes]
-        ).long().to(pred.device)
-        pred = pred[:, target_mask]
+        if pred is not None:
+            target_mask = torch.tensor(
+                [adata.var.index.get_loc(g) for g in target_genes]
+            ).long().to(pred.device)
+            pred = pred[:, target_mask]
 
         # Save target_genes for later use
         self.target_genes = target_genes
@@ -360,7 +366,6 @@ class ReconstructPipeline(Pipeline):
         # labels = size_factor * labels
         # pred = size_factor * pred
         return imputation_eval(torch.log1p(pred), torch.log1p(labels))
-
 
 
 

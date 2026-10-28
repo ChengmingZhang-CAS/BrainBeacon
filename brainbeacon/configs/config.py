@@ -32,14 +32,13 @@ MAX_LENGTH = 1000
 AUX_TOKEN = 20
 
 DEFAULT_PATHS = {
-    "DATA_PATH": "/cpfs01/projects-HDD/cfff-282dafecea22_HDD/public/BrainST",
-    "BASE_DIR": "/raid/zhangchengming/BrainBeacon-master",
-    "PRETRAIN_DIR": "/raid/zhangchengming/BrainBeacon-master/pretrained",
-    "PRIOR_DIR": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge",
-    # "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/model_h5ad_1211.h5ad",
-    "GENE_DICT_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/gene_dict.h5ad",
-    "GENE_LOOKUP_DIR": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/gene_lookup",
-    "ESM_EMBED_PATH": "/raid/zhangchengming/BrainBeacon-master/prior_knowledge/esm2_embeddings_d5120.pt",
+    "DATA_PATH": "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST",
+    "BASE_DIR": "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/jiaoyifeng/code/brainbeacon_new",
+    "PRETRAIN_DIR": "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/jiaoyifeng/code/brainbeacon_new/pretrained",
+    "PRIOR_DIR": "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/jiaoyifeng/code/brainbeacon_new/prior_knowledge",
+    "GENE_DICT_PATH": "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/jiaoyifeng/code/brainbeacon_new/prior_knowledge/gene_dict.h5ad",
+    "GENE_LOOKUP_DIR": "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/jiaoyifeng/code/brainbeacon_new/prior_knowledge/gene_lookup",
+    "ESM_EMBED_PATH": "/cpfs01/projects-HDD/cfff-c7cd658afc74_HDD/public/BrainST_pretrain/esm2_embeddings_d5120.pt",
 }
 
 # DEFAULT_PATHS = {

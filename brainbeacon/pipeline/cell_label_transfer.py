@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import scanpy as sc
 import matplotlib.pyplot as plt
+import torch
 import warnings
 import seaborn as sns
 from sklearn.neighbors import NearestNeighbors
@@ -28,7 +29,8 @@ def run_knn_voting(
     metric: str = "euclidean",
     weight_mode: str = "distance",
     unassigned_threshold: float = None,
-    device: str = "cpu"
+    device: str = "cpu",
+    query_batch_size: int = 512,
 ) -> List[str]:
     """Unified KNN voting interface."""
     if method == "native":
@@ -64,6 +66,87 @@ def run_knn_voting(
             print(f"Unassigned: {ratio_unassigned:.2f}%  (threshold={unassigned_threshold}, metric={metric}, top-T={T}/{K})")
 
         return preds
+
+    elif method == "torch":
+        if metric not in {"cosine", "euclidean"}:
+            raise ValueError(f"Unsupported metric {metric} for torch KNN")
+        if weight_mode not in {"distance", "uniform"}:
+            raise ValueError(f"Unsupported weight_mode {weight_mode} for torch KNN")
+
+        torch_device = torch.device(device)
+        if torch_device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested for torch KNN, but torch.cuda.is_available() is False.")
+
+        k = min(int(K), len(X_ref))
+        if k < 1:
+            raise ValueError("K must be at least 1 and the reference set must not be empty.")
+        query_batch_size = max(1, int(query_batch_size))
+
+        classes = np.unique(np.asarray(y_ref).astype(str))
+        class_to_idx = {label: idx for idx, label in enumerate(classes)}
+        ref_class_ids = torch.as_tensor(
+            [class_to_idx[str(label)] for label in y_ref],
+            dtype=torch.long,
+            device=torch_device,
+        )
+        ref = torch.as_tensor(
+            np.ascontiguousarray(X_ref, dtype=np.float32),
+            dtype=torch.float32,
+            device=torch_device,
+        )
+        if metric == "cosine":
+            ref = torch.nn.functional.normalize(ref, p=2, dim=1)
+        else:
+            ref_sq_norm = (ref * ref).sum(dim=1).unsqueeze(0)
+
+        pred_ids = []
+        with torch.inference_mode():
+            for start in range(0, len(X_query), query_batch_size):
+                query = torch.as_tensor(
+                    np.ascontiguousarray(X_query[start : start + query_batch_size], dtype=np.float32),
+                    dtype=torch.float32,
+                    device=torch_device,
+                )
+                if metric == "cosine":
+                    query = torch.nn.functional.normalize(query, p=2, dim=1)
+                    similarities = query @ ref.T
+                    values, neighbor_idx = torch.topk(similarities, k=k, dim=1, largest=True, sorted=True)
+                    distances = (1.0 - values).clamp_min_(0.0)
+                else:
+                    squared_distances = (
+                        (query * query).sum(dim=1, keepdim=True)
+                        + ref_sq_norm
+                        - 2.0 * (query @ ref.T)
+                    ).clamp_min_(0.0)
+                    values, neighbor_idx = torch.topk(
+                        squared_distances,
+                        k=k,
+                        dim=1,
+                        largest=False,
+                        sorted=True,
+                    )
+                    distances = torch.sqrt(values)
+
+                neighbor_classes = ref_class_ids[neighbor_idx]
+                if weight_mode == "uniform":
+                    weights = torch.ones_like(distances)
+                else:
+                    zero_distance = distances <= 1e-8
+                    has_zero_distance = zero_distance.any(dim=1, keepdim=True)
+                    inverse_distance = distances.clamp_min(1e-8).reciprocal()
+                    weights = torch.where(has_zero_distance, zero_distance.to(distances.dtype), inverse_distance)
+
+                votes = torch.zeros(
+                    (query.shape[0], len(classes)),
+                    dtype=weights.dtype,
+                    device=torch_device,
+                )
+                votes.scatter_add_(1, neighbor_classes, weights)
+                pred_ids.append(votes.argmax(dim=1).cpu().numpy())
+
+        if torch_device.type == "cuda":
+            torch.cuda.empty_cache()
+        return classes[np.concatenate(pred_ids)].tolist()
 
     elif method == "hnsw":
         import hnswlib
@@ -120,21 +203,69 @@ def run_prototype_classifier(X_ref: np.ndarray, y_ref: np.ndarray, X_query: np.n
     return [labels[i] for i in pred_idx]
 
 
-def run_logreg_classifier(X_ref: np.ndarray, y_ref: np.ndarray, X_query: np.ndarray, max_iter: int = 200, C: float = 1.0) -> List[str]:
-    """Logistic Regression classifier."""
+def run_logreg_classifier(
+    X_ref: np.ndarray,
+    y_ref: np.ndarray,
+    X_query: np.ndarray,
+    max_iter: int = 200,
+    C: float = 1.0,
+    tol: float = 1e-4,
+    diagnostics: Optional[Dict[str, object]] = None,
+) -> List[str]:
+    """Run Logistic Regression and fail closed when its optimizer does not converge."""
+    from sklearn.exceptions import ConvergenceWarning
     from sklearn.linear_model import LogisticRegression
-    clf = LogisticRegression(max_iter=max_iter, C=C, n_jobs=-1, multi_class="auto")
-    clf.fit(X_ref, y_ref)
+
+    clf = LogisticRegression(max_iter=max_iter, C=C, tol=tol)
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always", ConvergenceWarning)
+        clf.fit(X_ref, y_ref)
+
+    convergence_warnings = [
+        warning
+        for warning in caught_warnings
+        if issubclass(warning.category, ConvergenceWarning)
+    ]
+    for warning in caught_warnings:
+        if not issubclass(warning.category, ConvergenceWarning):
+            warnings.warn(str(warning.message), warning.category, stacklevel=2)
+
+    n_iter = [int(value) for value in np.asarray(clf.n_iter_).reshape(-1)]
+    fit_diagnostics = {
+        "logreg_convergence_status": "nonconverged" if convergence_warnings else "converged",
+        "logreg_convergence_warning": bool(convergence_warnings),
+        "logreg_n_iter_max": max(n_iter),
+        "logreg_n_iter": str(n_iter),
+        "logreg_max_iter": int(max_iter),
+        "logreg_C": float(C),
+        "logreg_tol": float(tol),
+    }
+    if diagnostics is not None:
+        diagnostics.update(fit_diagnostics)
+
+    if convergence_warnings:
+        raise RuntimeError(
+            "LogisticRegression did not converge; refusing to emit predictions. "
+            f"n_iter={n_iter}, max_iter={max_iter}, C={C}, tol={tol}."
+        )
     return clf.predict(X_query)
 
 def run_label_transfer(X_ref: np.ndarray, y_ref: np.ndarray, X_query: np.ndarray, method: str, **kwargs) -> List[str]:
     """Dispatcher for different classification methods."""
-    if method in ["native", "hnsw", "faiss"]:
+    if method in ["native", "torch", "hnsw", "faiss"]:
         return run_knn_voting(X_ref, y_ref, X_query, method=method, **kwargs)
     elif method == "prototype":
         return run_prototype_classifier(X_ref, y_ref, X_query, metric=kwargs.get("metric", "euclidean"))
     elif method == "logreg":
-        return run_logreg_classifier(X_ref, y_ref, X_query, max_iter=kwargs.get("max_iter", 200), C=kwargs.get("C", 1.0))
+        return run_logreg_classifier(
+            X_ref,
+            y_ref,
+            X_query,
+            max_iter=kwargs.get("max_iter", 200),
+            C=kwargs.get("C", 1.0),
+            tol=kwargs.get("tol", 1e-4),
+            diagnostics=kwargs.get("diagnostics"),
+        )
     else:
         raise ValueError(f"Unsupported method: {method}")
 
@@ -902,6 +1033,7 @@ def preprocess_one_adata(
     homology_df: Optional[pd.DataFrame] = None,
     prior_marker_dict: Optional[dict] = None,
     global_marker_key: str = "global",
+    min_genes: Optional[int] = None,
 ) -> AnnData:
     """Preprocess a single AnnData with optional smoothing, ID conversion, HVG, and forcing extra genes into HVG set."""
     print(f"[INFO] Preprocessing {info['data_name']}...")
@@ -943,11 +1075,17 @@ def preprocess_one_adata(
         adata.X = adata.layers["smooth"]
 
     # Light QC
-    min_gene_threshold = 0.01
-    dynamic_min_genes = min(200, int(adata.n_vars * min_gene_threshold))
-    dynamic_min_genes = max(dynamic_min_genes, 1)
-    print(f"[INFO] Using min_genes={dynamic_min_genes} (based on {adata.n_vars} genes)")
-    sc.pp.filter_cells(adata, min_genes=dynamic_min_genes)
+    if min_genes is None:
+        min_gene_threshold = 0.01
+        effective_min_genes = min(200, int(adata.n_vars * min_gene_threshold))
+        effective_min_genes = max(effective_min_genes, 1)
+        print(f"[INFO] Using min_genes={effective_min_genes} (based on {adata.n_vars} genes)")
+    else:
+        effective_min_genes = int(min_genes)
+        if effective_min_genes < 1:
+            raise ValueError(f"min_genes must be >= 1, got {min_genes}.")
+        print(f"[INFO] Using explicit min_genes={effective_min_genes}")
+    sc.pp.filter_cells(adata, min_genes=effective_min_genes)
     sc.pp.filter_genes(adata, min_cells=3)
 
     marker_genes = []
