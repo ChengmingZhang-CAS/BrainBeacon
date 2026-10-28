@@ -20,7 +20,7 @@ CLS_TOKEN = 2
 
 def get_linear_warmup_scheduler(optimizer, num_warmup_steps):
     def lr_lambda(current_step):
-        return min(1.0, float(current_step) / float(max(1, num_warmup_steps)))
+        return min(1.0, float(current_step + 1) / float(max(1, num_warmup_steps)))
     return LambdaLR(optimizer, lr_lambda)
 
 
@@ -580,6 +580,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
         if is_update_step:
             scaler.step(optimizer)
             scaler.update()
+            if lr_scheduler is not None:
+                lr_scheduler.step()
             optimizer.zero_grad()
 
             total_loss += accum_loss / accumulation_steps
@@ -597,7 +599,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
                     if writer:
                         writer.add_scalar("Loss/Step", avg_loss, global_step)
                     if logger:
-                        logger.info(f"Step {global_step}, Avg Loss: {avg_loss:.4f}")
+                        current_lr = optimizer.param_groups[0]["lr"]
+                        logger.info(f"Step {global_step}, Avg Loss: {avg_loss:.4f}, LR: {current_lr:.2e}")
                     total_loss = 0.0
                 if global_step % 10000 == 0:
                     checkpoint_path = os.path.join(logdir, f"epoch_{epoch}_step_{global_step}.pt")
@@ -621,6 +624,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, rank, write
     if (micro_step + 1) % accumulation_steps != 0:
         scaler.step(optimizer)
         scaler.update()
+        if lr_scheduler is not None:
+            lr_scheduler.step()
         optimizer.zero_grad()
         total_loss += accum_loss / accumulation_steps
         global_step += 1
